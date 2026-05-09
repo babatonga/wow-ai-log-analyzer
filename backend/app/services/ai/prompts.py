@@ -341,7 +341,7 @@ def build_user_prompt(
         "Below is the structured data for ONE player on ONE fight, plus reference "
         "top-log entries (same spec, same encounter, region- and difficulty-"
         "filtered, with full detail data: casts, gear, buffs, debuffs, "
-        "damage_taken, talent_ids).\n\n"
+        "damage_taken, talent_ids, stats).\n\n"
         f"DATA:\n```json\n{body}\n```"
     )
 

@@ -265,6 +265,12 @@ async def _populate_players(
                 talents_loadout=p.get("talents_loadout"),
                 extras={
                     "talent_ids": p.get("talent_ids") or [],
+                    # Primary attribute (Str/Agi/Int) + secondary stats
+                    # (Mastery/Crit/Haste/Versatility) + tertiary
+                    # (Speed/Leech/Avoidance) snapshot at peak (max). Used
+                    # by the AI to compare against top-log references and
+                    # call out under-statted slots vs the percentile.
+                    "stats": p.get("stats") or {},
                     # Always set ``parse_metrics`` (even when WCL has no
                     # ranking data) so the analyzer's ``has_parse_metrics``
                     # marker is True and we don't re-fetch later.

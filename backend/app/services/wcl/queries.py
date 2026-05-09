@@ -52,7 +52,7 @@ REPORT_PLAYER_DETAILS = """
 query ReportPlayerDetails($code: String!, $fightIDs: [Int]!) {
   reportData {
     report(code: $code) {
-      playerDetails(fightIDs: $fightIDs)
+      playerDetails(fightIDs: $fightIDs, includeCombatantInfo: true)
     }
   }
 }

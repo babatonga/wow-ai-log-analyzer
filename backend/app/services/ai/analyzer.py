@@ -201,11 +201,13 @@ async def _fetch_top_log_references(
                 "wcl_report_code": r.wcl_report_code,
                 "wcl_fight_id": r.wcl_fight_id,
                 "composition": (r.payload or {}).get("composition") or {},
-                # Full detail (casts, gear, buffs, debuffs, damage_taken, talents)
-                # for top performers — empty dict if we never fetched it.
+                # Full detail (casts, gear, buffs, debuffs, damage_taken,
+                # talents, stats) for top performers — empty dict if we
+                # never fetched it.
                 "detail": {
                     "talents_loadout": detail.get("talents_loadout"),
                     "talent_ids": detail.get("talent_ids") or [],
+                    "stats": detail.get("stats") or {},
                     "casts": detail.get("casts") or [],
                     "gear": detail.get("gear") or [],
                     "buffs": detail.get("buffs") or [],
@@ -555,6 +557,11 @@ async def request_analysis(
         "deaths": player.deaths,
         "talents_loadout": player.talents_loadout,
         "talent_ids": player_extras.get("talent_ids") or [],
+        # Stats snapshot from combatantInfo: {Strength|Agility|Intellect,
+        # Stamina, Mastery, Crit, Haste, Versatility, Speed, Leech,
+        # Avoidance, ...}. Peak (max) values, in armoury units. Empty {}
+        # when WCL didn't include combatantInfo for this log.
+        "stats": player_extras.get("stats") or {},
         "buffs": player_extras.get("buffs") or [],
         "debuffs": player_extras.get("debuffs") or [],
         "damage_taken": player_extras.get("damage_taken") or [],

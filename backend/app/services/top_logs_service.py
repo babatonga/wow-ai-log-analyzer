@@ -321,6 +321,9 @@ async def _fetch_detail_for_top_log(
         "item_level": target.get("item_level"),
         "talents_loadout": target.get("talents_loadout"),
         "talent_ids": target.get("talent_ids") or [],
+        # Same shape as the player's own stats — peak combatantInfo
+        # values per stat name (Strength/Mastery/Crit/...).
+        "stats": target.get("stats") or {},
         "casts": casts[:25],
         "gear": gear,
         "buffs": buffs,
