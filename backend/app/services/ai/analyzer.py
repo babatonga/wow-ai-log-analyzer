@@ -103,9 +103,19 @@ async def _ensure_references(
     general-best-practice analysis without delta comparisons.
 
     The first analysis on a new boss therefore takes ~1-3 min longer
-    (rankings + composition checks + 5 detail fetches), every subsequent
+    (rankings + composition checks + 5 detail fetches); every subsequent
     analysis on the same boss is fast.
+
+    Implementation note: the seeding writes happen on a SEPARATE session
+    so committing them doesn't pollute the caller's transaction context.
+    The original implementation called ``session.commit()`` mid-flight
+    inside the worker's outer ``session.begin()`` block, which closed
+    the outer transaction and made every subsequent query on that
+    session raise ``InvalidRequestError: Can't operate on closed
+    transaction``. The refs are committed eagerly so they're cached for
+    later requests even if the analysis itself fails later.
     """
+    from app.db import async_session_factory
     from app.models import GameSpec
     from app.services.top_logs_service import refresh_top_logs_for_spec_encounter
     from app.services.wcl.client import WclClient
@@ -119,20 +129,21 @@ async def _ensure_references(
         return False
 
     try:
-        async with WclClient() as wcl:
-            rows = await refresh_top_logs_for_spec_encounter(
-                session,
-                spec=spec,
-                encounter_id=encounter_id,
-                metric=metric,
-                # ``is_raid`` defaults the difficulty filter; M+ encounters
-                # produce empty rankings via the same path which is fine.
-                is_raid=True,
-                wcl_client=wcl,
-            )
-        # Commit so the refs are visible in subsequent reads + cached for
-        # later requests even if the analysis itself fails later.
-        await session.commit()
+        async with async_session_factory() as seed_session:
+            async with seed_session.begin():
+                async with WclClient() as wcl:
+                    rows = await refresh_top_logs_for_spec_encounter(
+                        seed_session,
+                        spec=spec,
+                        encounter_id=encounter_id,
+                        metric=metric,
+                        # ``is_raid`` defaults the difficulty filter; M+
+                        # encounters produce empty rankings via the same
+                        # path which is fine.
+                        is_raid=True,
+                        wcl_client=wcl,
+                    )
+                # context manager commits the seed_session transaction
         logger.info(
             "sync-seed for spec=%s encounter=%s metric=%s → %s rows",
             spec_slug,
@@ -148,7 +159,6 @@ async def _ensure_references(
             encounter_id,
             metric,
         )
-        await session.rollback()
         return False
 
 
