@@ -401,23 +401,42 @@ function ReportView({
           <span className="text-xs text-zinc-500">{report.region.toUpperCase() || "—"}</span>
         </header>
         <div className="mt-4 flex flex-wrap gap-2">
-          {report.fights.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => setFightId(f.id)}
-              className={`rounded-md border px-3 py-1.5 text-xs ${
-                f.id === fight?.id
-                  ? "border-accent bg-accent/10 text-accent"
-                  : "border-bg-3 bg-bg-2 text-zinc-200 hover:border-zinc-500"
-              }`}
-            >
-              {f.name_localized || f.name}{" "}
-              <span className="text-zinc-500">
-                {f.is_kill ? "✓" : f.boss_percentage !== null ? `${f.boss_percentage?.toFixed(1)}%` : "—"}
-                {f.keystone_level ? ` · +${f.keystone_level}` : ""}
-              </span>
-            </button>
-          ))}
+          {report.fights
+            // Skip "no progress" pulls (boss reset before engagement
+            // started). They have no metric data attached and clutter
+            // the picker. M+ runs always pass through (keystone_level
+            // set even on depleted runs).
+            .filter(
+              (f) =>
+                f.is_kill ||
+                f.boss_percentage !== null ||
+                f.keystone_level !== null,
+            )
+            .map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setFightId(f.id)}
+                className={`rounded-md border px-3 py-1.5 text-xs ${
+                  f.id === fight?.id
+                    ? "border-accent bg-accent/10 text-accent"
+                    : "border-bg-3 bg-bg-2 text-zinc-200 hover:border-zinc-500"
+                }`}
+              >
+                {f.name_localized || f.name}{" "}
+                {f.is_kill ? (
+                  <span className="ml-0.5 font-bold text-emerald-400">✓</span>
+                ) : (
+                  <span className="ml-0.5 text-zinc-500">
+                    {f.boss_percentage !== null
+                      ? `${f.boss_percentage?.toFixed(1)}%`
+                      : ""}
+                  </span>
+                )}
+                {f.keystone_level ? (
+                  <span className="ml-0.5 text-zinc-500"> · +{f.keystone_level}</span>
+                ) : null}
+              </button>
+            ))}
         </div>
       </Card>
 
