@@ -9,6 +9,7 @@ import { Button, Card, FieldError, Input, Label, Select } from "@/components/ui"
 import { ApiClientError, apiFetch } from "@/lib/api";
 import type {
   AiProviderType,
+  ReasoningEffort,
   UserAiConfig,
   UserAiConfigInput,
   UserAiConfigTestResult,
@@ -32,6 +33,9 @@ export function UserAiConfigPanel() {
   const [model, setModel] = useState(DEFAULT_MODELS.anthropic);
   const [apiKey, setApiKey] = useState("");
   const [label, setLabel] = useState("");
+  // "" = use OpenAI default (no reasoning); rest map to GPT-5/o-series
+  // ``reasoning_effort`` values. Only sent for openai* providers.
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | "">("");
   const [err, setErr] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [testResult, setTestResult] = useState<UserAiConfigTestResult | null>(null);
@@ -50,6 +54,7 @@ export function UserAiConfigPanel() {
     setBaseUrl(cfgQ.data.base_url ?? "");
     setModel(cfgQ.data.model);
     setLabel(cfgQ.data.label);
+    setReasoningEffort(cfgQ.data.reasoning_effort ?? "");
     setHydrated(true);
   }, [cfgQ.data, hydrated]);
 
@@ -97,6 +102,7 @@ export function UserAiConfigPanel() {
       setModel(DEFAULT_MODELS.anthropic);
       setApiKey("");
       setLabel("");
+      setReasoningEffort("");
       setTestResult(null);
       setErr(null);
       qc.invalidateQueries({ queryKey: ["my-ai-config"] });
@@ -136,6 +142,10 @@ export function UserAiConfigPanel() {
       // require re-entering — simplest approach.
       api_key: apiKey.trim(),
       label: label.trim() || undefined,
+      // Only meaningful for openai*; backend ignores it for anthropic.
+      // Empty string → null, telling backend to fall back to OpenAI's
+      // default (effectively no reasoning for Chat Completions).
+      reasoning_effort: reasoningEffort || null,
     };
   };
 
@@ -249,6 +259,27 @@ export function UserAiConfigPanel() {
             placeholder={t("profile.aiCfg.labelPlaceholder")}
           />
         </div>
+
+        {providerType !== "anthropic" && (
+          <div>
+            <Label>{t("profile.aiCfg.reasoningEffort")}</Label>
+            <Select
+              value={reasoningEffort}
+              onChange={(e) =>
+                setReasoningEffort(e.target.value as ReasoningEffort | "")
+              }
+            >
+              <option value="">{t("profile.aiCfg.reasoningEffortOff")}</option>
+              <option value="minimal">minimal</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </Select>
+            <p className="mt-1 text-xs text-zinc-500">
+              {t("profile.aiCfg.reasoningEffortHint")}
+            </p>
+          </div>
+        )}
 
         <FieldError>{err}</FieldError>
 

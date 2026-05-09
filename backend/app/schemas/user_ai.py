@@ -6,6 +6,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 ProviderType = Literal["anthropic", "openai", "openai_compatible"]
+# OpenAI / o-series ``reasoning_effort`` parameter. None = OpenAI's
+# default (de facto no reasoning for Chat Completions).
+ReasoningEffort = Literal["minimal", "low", "medium", "high"]
 
 
 class UserAiConfigOut(BaseModel):
@@ -20,6 +23,7 @@ class UserAiConfigOut(BaseModel):
     # Frontend renders this as "ab••••••••cd" so the user can confirm
     # which key is on file without us ever exposing the secret.
     api_key_masked: str
+    reasoning_effort: ReasoningEffort | None = None
 
 
 class UserAiConfigIn(BaseModel):
@@ -28,6 +32,10 @@ class UserAiConfigIn(BaseModel):
     model: str = Field(min_length=1, max_length=128)
     api_key: str = Field(min_length=1, max_length=512)
     label: str = Field(default="", max_length=64)
+    # Optional. Only honoured when provider_type is openai/openai_compatible
+    # and the model recognises it (GPT-5 / o-series). Anthropic & most
+    # self-hosted servers ignore the field.
+    reasoning_effort: ReasoningEffort | None = None
 
 
 class UserAiConfigTestIn(BaseModel):
@@ -46,6 +54,7 @@ class UserAiConfigTestIn(BaseModel):
     # Empty/missing → fall back to the user's saved (Fernet-encrypted) key.
     api_key: str = Field(default="", max_length=512)
     label: str = Field(default="", max_length=64)
+    reasoning_effort: ReasoningEffort | None = None
 
 
 class UserAiConfigTestResult(BaseModel):

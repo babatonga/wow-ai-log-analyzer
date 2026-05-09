@@ -59,6 +59,7 @@ async def upsert_config(
             model=payload.model.strip(),
             api_key_encrypted=encrypted,
             label=payload.label.strip(),
+            reasoning_effort=payload.reasoning_effort,
         )
         session.add(cfg)
     else:
@@ -67,6 +68,7 @@ async def upsert_config(
         cfg.model = payload.model.strip()
         cfg.api_key_encrypted = encrypted
         cfg.label = payload.label.strip()
+        cfg.reasoning_effort = payload.reasoning_effort
     await session.flush()
     return cfg
 
@@ -85,6 +87,7 @@ def to_out(cfg: UserAiConfig) -> UserAiConfigOut:
         model=cfg.model,
         label=cfg.label,
         api_key_masked=_mask(plain),
+        reasoning_effort=cfg.reasoning_effort,  # type: ignore[arg-type]
     )
 
 
@@ -105,6 +108,7 @@ def provider_for_user_config(cfg: UserAiConfig) -> AiProvider:
         api_key=api_key,
         base_url=base_url,
         model=cfg.model,
+        reasoning_effort=cfg.reasoning_effort,
     )
 
 

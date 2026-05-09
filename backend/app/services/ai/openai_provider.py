@@ -31,6 +31,7 @@ class OpenAiCompatibleProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         """Build a provider.
 
@@ -38,8 +39,14 @@ class OpenAiCompatibleProvider:
         has stored their own key in their profile), those win. Otherwise we
         fall back to the app-wide settings — that's the legacy admin-managed
         path used when an analysis is triggered without ``use_own_ai=true``.
+
+        ``reasoning_effort`` overrides ``settings.openai_reasoning_effort``
+        for the per-user BYOK path (the user's profile lets them pick their
+        own GPT-5 reasoning level). None / empty string falls through to
+        the app-wide setting.
         """
         self._mode = mode
+        self._reasoning_effort_override = (reasoning_effort or "").strip().lower() or None
         if api_key is not None:
             # BYOK / user-config path. Trust whatever the caller hands us.
             self._client = AsyncOpenAI(api_key=api_key, base_url=base_url or None)
@@ -97,8 +104,12 @@ class OpenAiCompatibleProvider:
         # full reasoning at the cost of ~5–10× output tokens.
         # Valid values: minimal | low | medium | high. Empty / unset
         # = OpenAI default (de facto minimal for Chat Completions).
+        # Per-user BYOK config overrides the app-wide setting.
         if self._mode == "openai":
-            effort = (settings.openai_reasoning_effort or "").strip().lower()
+            effort = (
+                self._reasoning_effort_override
+                or (settings.openai_reasoning_effort or "").strip().lower()
+            )
             if effort in ("minimal", "low", "medium", "high"):
                 extra_body["reasoning_effort"] = effort
 

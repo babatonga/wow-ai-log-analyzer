@@ -32,6 +32,7 @@ export interface PublicConfig {
 }
 
 export type AiProviderType = "anthropic" | "openai" | "openai_compatible";
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 export interface UserAiConfig {
   provider_type: AiProviderType;
@@ -39,6 +40,7 @@ export interface UserAiConfig {
   model: string;
   label: string;
   api_key_masked: string;
+  reasoning_effort: ReasoningEffort | null;
 }
 
 export interface UserAiConfigInput {
@@ -47,6 +49,7 @@ export interface UserAiConfigInput {
   model: string;
   api_key: string;
   label?: string;
+  reasoning_effort?: ReasoningEffort | null;
 }
 
 export interface UserAiConfigTestResult {

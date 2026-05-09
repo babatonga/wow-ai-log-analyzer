@@ -47,3 +47,9 @@ class UserAiConfig(Base, TimestampMixin):
     api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     # Free-form display name the user picked (e.g. "My Ollama @ home").
     label: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    # OpenAI / o-series ``reasoning_effort`` parameter
+    # (minimal | low | medium | high). NULL = OpenAI's default
+    # (effectively no reasoning for Chat Completions). Ignored for
+    # ``provider_type=anthropic`` since Claude has its own ``thinking``
+    # control that we don't surface here yet.
+    reasoning_effort: Mapped[str | None] = mapped_column(String(8), nullable=True)
