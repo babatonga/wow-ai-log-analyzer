@@ -80,12 +80,18 @@ class OpenAiCompatibleProvider:
         # provider. Set LOCAL_AI_ENABLE_THINKING=false in .env if you want
         # raw speed (~10s instead of ~30-60s) at a quality cost. The flag
         # is silently ignored by models that don't support it.
-        thinking_enabled = (
-            settings.local_ai_enable_thinking if self._mode == "local" else False
-        )
-        extra_body: dict[str, Any] = {
-            "chat_template_kwargs": {"enable_thinking": thinking_enabled},
-        }
+        # ``chat_template_kwargs.enable_thinking`` is a llama.cpp /
+        # Qwen-template-specific knob — it toggles the chain-of-thought
+        # block in the Jinja chat template. Real OpenAI's API rejects
+        # the parameter outright (HTTP 400 "Unknown parameter:
+        # 'chat_template_kwargs'"), so only send it for local mode.
+        # GPT-5/o-series reasoning is handled by OpenAI's separate
+        # ``reasoning_effort`` parameter; not used here.
+        extra_body: dict[str, Any] = {}
+        if self._mode == "local":
+            extra_body["chat_template_kwargs"] = {
+                "enable_thinking": settings.local_ai_enable_thinking,
+            }
 
         # OpenAI deprecated ``max_tokens`` in favour of
         # ``max_completion_tokens`` for GPT-5+ and o1+ models — those
@@ -109,7 +115,7 @@ class OpenAiCompatibleProvider:
                 ],
                 **token_kwargs,
                 temperature=temperature,
-                extra_body=extra_body,
+                extra_body=extra_body or None,
             )
         except Exception as exc:  # noqa: BLE001
             raise UpstreamError(f"{self._mode} chat completion failed: {exc}") from exc
