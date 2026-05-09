@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_str, encrypt_str
 from app.models import UserAiConfig
-from app.schemas.user_ai import UserAiConfigIn, UserAiConfigOut, UserAiConfigTestResult
+from app.schemas.user_ai import (
+    UserAiConfigIn,
+    UserAiConfigOut,
+    UserAiConfigTestIn,
+    UserAiConfigTestResult,
+)
 from app.services.ai.anthropic_provider import AnthropicProvider
 from app.services.ai.base import AiProvider
 from app.services.ai.openai_provider import OpenAiCompatibleProvider
@@ -100,6 +105,37 @@ def provider_for_user_config(cfg: UserAiConfig) -> AiProvider:
         api_key=api_key,
         base_url=base_url,
         model=cfg.model,
+    )
+
+
+async def test_config_for_user(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    payload: UserAiConfigTestIn,
+) -> UserAiConfigTestResult:
+    """Test endpoint wrapper that handles the empty-key fallback.
+
+    The BYOK panel clears the api_key input after a successful save, so
+    when the user clicks Test afterwards the request body has no key.
+    Look up the persisted (encrypted) key in that case rather than 422.
+    """
+    api_key = (payload.api_key or "").strip()
+    if not api_key:
+        cfg = await get_config(session, user_id)
+        if cfg is None:
+            return UserAiConfigTestResult(
+                ok=False,
+                detail="No API key — enter one above and click Test, or save first.",
+            )
+        api_key = decrypt_str(cfg.api_key_encrypted)
+    return await test_config(
+        UserAiConfigIn(
+            provider_type=payload.provider_type,
+            base_url=payload.base_url,
+            model=payload.model,
+            api_key=api_key,
+            label=payload.label,
+        )
     )
 
 

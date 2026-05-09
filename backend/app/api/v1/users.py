@@ -9,7 +9,12 @@ from app.core.security import hash_password, verify_password
 from app.deps import CurrentUser, SessionDep
 from app.models import Report
 from app.schemas.user import UserOut, UserUpdateMe
-from app.schemas.user_ai import UserAiConfigIn, UserAiConfigOut, UserAiConfigTestResult
+from app.schemas.user_ai import (
+    UserAiConfigIn,
+    UserAiConfigOut,
+    UserAiConfigTestIn,
+    UserAiConfigTestResult,
+)
 from app.schemas.wcl import WclConnectionStatus
 from app.services import user_ai_service, wcl_oauth_service
 
@@ -105,11 +110,17 @@ async def remove_ai_config(user: CurrentUser, session: SessionDep) -> None:
 
 
 @router.post("/me/ai-config/test", response_model=UserAiConfigTestResult)
-async def test_ai_config(payload: UserAiConfigIn, _: CurrentUser) -> UserAiConfigTestResult:
+async def test_ai_config(
+    payload: UserAiConfigTestIn,
+    user: CurrentUser,
+    session: SessionDep,
+) -> UserAiConfigTestResult:
     """Probe the user-supplied credentials before they save them.
 
-    No DB write — the frontend sends the (still-plaintext) form values, we
-    bounce a tiny request off the provider's auth endpoint and report
+    No DB write — the frontend sends the form values plus (optionally) a
+    plaintext key. When ``api_key`` is empty, fall back to the user's
+    saved (encrypted) key so the user can re-test without typing the
+    secret again. The provider's auth endpoint is hit and we report
     success/failure + latency.
     """
-    return await user_ai_service.test_config(payload)
+    return await user_ai_service.test_config_for_user(session, user.id, payload)

@@ -30,6 +30,24 @@ class UserAiConfigIn(BaseModel):
     label: str = Field(default="", max_length=64)
 
 
+class UserAiConfigTestIn(BaseModel):
+    """Same shape as :class:`UserAiConfigIn` but with ``api_key`` optional.
+
+    The Test button sits BELOW the Save button on the BYOK panel — once a
+    user has saved a config the panel clears the api_key input (we don't
+    want it floating around in form state), so a subsequent Test would
+    submit an empty key. We treat empty ``api_key`` as "use the saved
+    one" rather than rejecting the request with 422.
+    """
+
+    provider_type: ProviderType
+    base_url: str | None = None
+    model: str = Field(min_length=1, max_length=128)
+    # Empty/missing → fall back to the user's saved (Fernet-encrypted) key.
+    api_key: str = Field(default="", max_length=512)
+    label: str = Field(default="", max_length=64)
+
+
 class UserAiConfigTestResult(BaseModel):
     ok: bool
     detail: str
