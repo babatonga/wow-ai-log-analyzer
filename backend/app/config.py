@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     # Leave empty to hit OpenAI directly; set to a custom URL for Azure OpenAI
     # or any OpenAI-compatible cloud proxy.
     openai_base_url: str = ""
+    # Reasoning effort for GPT-5 / o-series models (others ignore it).
+    # Empty or unrecognised value → OpenAI default (de facto "minimal" for
+    # Chat Completions, i.e. reasoning_tokens ≈ 0). Set to ``high`` for
+    # full reasoning at the cost of ~5–10× output tokens. Valid values:
+    # minimal | low | medium | high.
+    openai_reasoning_effort: str = ""
 
     # --- AI: local model via the bundled llama.cpp container ---
     # Used when ai_provider == "local". The compose service ``local-ai``

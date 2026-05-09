@@ -85,13 +85,22 @@ class OpenAiCompatibleProvider:
         # block in the Jinja chat template. Real OpenAI's API rejects
         # the parameter outright (HTTP 400 "Unknown parameter:
         # 'chat_template_kwargs'"), so only send it for local mode.
-        # GPT-5/o-series reasoning is handled by OpenAI's separate
-        # ``reasoning_effort`` parameter; not used here.
         extra_body: dict[str, Any] = {}
         if self._mode == "local":
             extra_body["chat_template_kwargs"] = {
                 "enable_thinking": settings.local_ai_enable_thinking,
             }
+        # OpenAI's GPT-5 / o-series reasoning. Without this parameter
+        # the Chat Completions API silently runs the model in "no
+        # reasoning" mode (reasoning_tokens=0 in usage) — verified by
+        # smoke test against /v1/chat/completions. ``high`` engages
+        # full reasoning at the cost of ~5–10× output tokens.
+        # Valid values: minimal | low | medium | high. Empty / unset
+        # = OpenAI default (de facto minimal for Chat Completions).
+        if self._mode == "openai":
+            effort = (settings.openai_reasoning_effort or "").strip().lower()
+            if effort in ("minimal", "low", "medium", "high"):
+                extra_body["reasoning_effort"] = effort
 
         # OpenAI deprecated ``max_tokens`` in favour of
         # ``max_completion_tokens`` for GPT-5+ and o1+ models — those
@@ -119,6 +128,23 @@ class OpenAiCompatibleProvider:
             )
         except Exception as exc:  # noqa: BLE001
             raise UpstreamError(f"{self._mode} chat completion failed: {exc}") from exc
+
+        # Surface token usage for observability — the reasoning_tokens
+        # number tells us whether GPT-5/o-series actually engaged the
+        # reasoning trace or short-circuited (fast = often 0). For
+        # llama.cpp / Qwen the field is absent and stays at 0.
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            details = getattr(usage, "completion_tokens_details", None)
+            reasoning_tokens = getattr(details, "reasoning_tokens", 0) if details else 0
+            logger.info(
+                "ai-call mode=%s model=%s prompt=%s completion=%s reasoning=%s",
+                self._mode,
+                chosen,
+                getattr(usage, "prompt_tokens", "?"),
+                getattr(usage, "completion_tokens", "?"),
+                reasoning_tokens,
+            )
 
         choice = resp.choices[0] if resp.choices else None
         message = choice.message if choice else None
