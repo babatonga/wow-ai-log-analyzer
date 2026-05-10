@@ -260,6 +260,22 @@ def parse_player_details(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 or (combatant.get("talentTree") if isinstance(combatant, dict) else None)
                 or (combatant.get("talents_string") if isinstance(combatant, dict) else None)
             )
+            # Modern WoW (DF/TWW) ships `combatantInfo.talents` as `[]` and
+            # puts the actual picks in the talent-tree loadout — list of
+            # `{id, rank, nodeID}` entries. Backfill talent_ids from the
+            # loadout so the AI prompt always has a flat ID list to cite,
+            # regardless of expansion.
+            if not talent_ids and isinstance(loadout, list):
+                for t in loadout:
+                    if not isinstance(t, dict):
+                        continue
+                    tid = t.get("id") or t.get("talentID") or t.get("guid")
+                    if tid is None:
+                        continue
+                    try:
+                        talent_ids.append(int(tid))
+                    except (TypeError, ValueError):
+                        continue
             # Secondary stats + primary attributes from combatantInfo.stats.
             # WCL packages them as ``{"Strength": {"min": x, "max": y}, ...}``;
             # we collapse to the max value (peak gear/buffs) for AI prompts.
