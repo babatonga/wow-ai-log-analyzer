@@ -19,7 +19,9 @@ from app.schemas.system import (
     SimcStatusOut,
     SystemStatusOut,
 )
+from app.schemas.talent_finder import EncounterMap
 from app.services import docker_control, local_ai_supervisor_service as supervisor, simc_service
+from app.services import talent_finder_service
 from app.core.errors import UpstreamError
 from app.schemas.user import (
     AdminSettingsOut,
@@ -393,4 +395,35 @@ async def update_simc_sidecar(_: AdminUser) -> SimcStatusOut:
         container=container_out,
     )
 
+
+# --- Talent-Finder: encounter mapping -----------------------------------------
+
+
+@router.get("/talent-finder/encounter-map", response_model=EncounterMap)
+async def read_talent_finder_encounter_map(
+    session: SessionDep, _: AdminUser
+) -> EncounterMap:
+    """Current (fight_profile → encounter) mapping the talent-finder mines.
+
+    Returns an empty map (all entries ``None``) when the admin hasn't
+    configured anything yet — that's a valid state, the user-facing
+    talent-finder endpoint will then reject runs with a clear error.
+    """
+    return await talent_finder_service.read_encounter_map(session)
+
+
+@router.put("/talent-finder/encounter-map", response_model=EncounterMap)
+async def update_talent_finder_encounter_map(
+    payload: EncounterMap, session: SessionDep, _: AdminUser
+) -> EncounterMap:
+    """Replace the entire (fight_profile → encounter) mapping.
+
+    PUT semantics: the full map in the body is what gets stored. To
+    clear a profile, send ``null`` for that field. The admin form is
+    expected to read the current map first, mutate locally, and PUT
+    back — no PATCH endpoint by design (the map is tiny).
+    """
+    await talent_finder_service.write_encounter_map(session, payload)
+    await session.commit()
+    return await talent_finder_service.read_encounter_map(session)
 

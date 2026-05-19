@@ -10,6 +10,7 @@ import { Button, Card, Input, Label, Select } from "@/components/ui";
 import { LocalAiCard } from "@/components/admin/LocalAiCard";
 import { SimcCard } from "@/components/admin/SimcCard";
 import { SystemCard } from "@/components/admin/SystemCard";
+import { TalentFinderEncounterMapCard } from "@/components/admin/TalentFinderEncounterMapCard";
 import { TopLogsToolsCard } from "@/components/admin/TopLogsToolsCard";
 import { WowDataCard } from "@/components/admin/WowDataCard";
 import { ApiClientError, apiFetch } from "@/lib/api";
@@ -285,6 +286,7 @@ function AdminView({ locale, currentUserId }: { locale: Locale; currentUserId: s
 
       <WowDataCard locale={locale} />
       <TopLogsToolsCard locale={locale} />
+      <TalentFinderEncounterMapCard />
       <LocalAiCard />
       <SimcCard />
       <SystemCard />

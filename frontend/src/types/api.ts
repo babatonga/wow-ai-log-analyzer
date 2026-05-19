@@ -593,3 +593,25 @@ export interface SimcStatus {
   base_url: string;
   container: ContainerStatus | null;
 }
+
+// --- Talent-Finder ---------------------------------------------------------
+
+export type FightProfileKey =
+  | "single_target"
+  | "council"
+  | "mythic_plus"
+  | "custom";
+
+export interface TalentFinderEncounterMapEntry {
+  encounter_id: number;
+  encounter_name: string;
+  difficulty: string | null;
+  is_raid: boolean;
+}
+
+export interface TalentFinderEncounterMap {
+  single_target: TalentFinderEncounterMapEntry | null;
+  council: TalentFinderEncounterMapEntry | null;
+  mythic_plus: TalentFinderEncounterMapEntry | null;
+  custom: TalentFinderEncounterMapEntry | null;
+}

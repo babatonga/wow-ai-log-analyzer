@@ -28,9 +28,11 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import GameSpec, TopLog
+from app.models import AppSetting, GameSpec, TopLog
+from app.schemas.talent_finder import EncounterMap, EncounterMapEntry
 from app.services.talents import (
     DecodedLoadout,
     TraitDataset,
@@ -48,6 +50,44 @@ from app.services.talents.finder import (
 )
 
 logger = logging.getLogger(__name__)
+
+ENCOUNTER_MAP_SETTING_KEY = "talent_finder_encounter_map"
+"""The single ``AppSetting`` row that stores the admin-configured
+(fight_profile → encounter) mapping. JSON value shape matches
+:class:`EncounterMap`."""
+
+
+# ---------------------------------------------------------------------------
+# Admin: encounter mapping
+# ---------------------------------------------------------------------------
+
+
+async def read_encounter_map(session: AsyncSession) -> EncounterMap:
+    """Return the current map (empty defaults if the setting is absent)."""
+    row = (
+        await session.execute(
+            select(AppSetting).where(AppSetting.key == ENCOUNTER_MAP_SETTING_KEY)
+        )
+    ).scalar_one_or_none()
+    if row is None or not isinstance(row.value, dict):
+        return EncounterMap()
+    return EncounterMap.model_validate(row.value)
+
+
+async def write_encounter_map(
+    session: AsyncSession, encounter_map: EncounterMap
+) -> None:
+    """Upsert the encounter map setting. Caller is responsible for the commit."""
+    payload = encounter_map.model_dump(mode="json")
+    stmt = pg_insert(AppSetting).values(
+        key=ENCOUNTER_MAP_SETTING_KEY, value=payload
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[AppSetting.key],
+        set_={"value": stmt.excluded.value},
+    )
+    await session.execute(stmt)
+
 
 # Threshold ladder used when the first attempt explodes. Strict-er
 # values demand stronger consensus among top performers; 0.95 means
