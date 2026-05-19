@@ -24,6 +24,7 @@ consensus until the search space is manageable.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -87,6 +88,99 @@ async def write_encounter_map(
         set_={"value": stmt.excluded.value},
     )
     await session.execute(stmt)
+
+
+# ---------------------------------------------------------------------------
+# Spec resolution from a /simc profile
+# ---------------------------------------------------------------------------
+
+
+# simc concatenates compound class names (DeathKnight → "deathknight").
+# Our DB uses the underscored form. Only two classes actually differ;
+# the rest are single-word and match directly.
+_SIMC_TO_DB_CLASS_SLUG = {
+    "deathknight": "death_knight",
+    "demonhunter": "demon_hunter",
+    "druid": "druid",
+    "evoker": "evoker",
+    "hunter": "hunter",
+    "mage": "mage",
+    "monk": "monk",
+    "paladin": "paladin",
+    "priest": "priest",
+    "rogue": "rogue",
+    "shaman": "shaman",
+    "warlock": "warlock",
+    "warrior": "warrior",
+}
+
+_CLASS_LINE_RE = re.compile(
+    r"^\s*("
+    + "|".join(re.escape(k) for k in _SIMC_TO_DB_CLASS_SLUG)
+    + r")\s*=", re.IGNORECASE,
+)
+_SPEC_LINE_RE = re.compile(r"^\s*spec\s*=\s*([a-z_]+)\s*$", re.IGNORECASE)
+
+
+def parse_class_and_spec(profile: str) -> tuple[str, str]:
+    """Pull ``(class_db_slug, spec_simc)`` out of a /simc profile.
+
+    Raises ``ValueError`` if the profile doesn't look like a /simc
+    paste (no class line, or no spec line). Callers should rescue and
+    surface a 422 to the user with a clear "paste the /simc text"
+    hint, same as the standard simulation endpoint does.
+    """
+    class_db: str | None = None
+    spec_simc: str | None = None
+    for raw in profile.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if class_db is None:
+            m = _CLASS_LINE_RE.match(line)
+            if m:
+                class_db = _SIMC_TO_DB_CLASS_SLUG[m.group(1).lower()]
+                continue
+        if spec_simc is None:
+            m = _SPEC_LINE_RE.match(line)
+            if m:
+                spec_simc = m.group(1).lower()
+        if class_db and spec_simc:
+            break
+    if class_db is None:
+        raise ValueError(
+            "Profile doesn't contain a recognized class= line. Paste the "
+            "full /simc text the in-game command produced."
+        )
+    if spec_simc is None:
+        raise ValueError(
+            "Profile is missing a spec= line. Activate the talent loadout "
+            "in-game and re-run /simc."
+        )
+    return class_db, spec_simc
+
+
+async def resolve_game_spec(
+    session: AsyncSession, class_db_slug: str, spec_simc: str
+) -> GameSpec:
+    """Map (class, spec) parsed from a /simc paste to the GameSpec row.
+
+    The DB stores ``GameSpec.slug`` as ``{class_slug}_{spec_slug}``
+    (see column comment in models/class_spec.py). We compose the
+    expected slug, then double-check the class matches in case the
+    user pasted a doctored profile.
+    """
+    expected = f"{class_db_slug}_{spec_simc}"
+    row = (
+        await session.execute(select(GameSpec).where(GameSpec.slug == expected))
+    ).scalar_one_or_none()
+    if row is None:
+        raise ValueError(
+            f"Unknown spec '{expected}'. Either the WoW data tables "
+            f"haven't been imported yet, or the profile combines a "
+            f"class with an invalid spec."
+        )
+    return row
 
 
 # Threshold ladder used when the first attempt explodes. Strict-er

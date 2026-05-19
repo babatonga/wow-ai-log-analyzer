@@ -95,6 +95,14 @@ class Simulation(Base, TimestampMixin):
     # the raw number, and so a future migration can recompute iterations
     # if we tune the presets.
     precision: Mapped[str] = mapped_column(String(16), default="precise", nullable=False)
+    # Sim mode. ``"standard"`` = the original per-loadout DPS compare,
+    # ``"talent_finder"`` = the One-Button-Talent-Finder which fans a single
+    # base profile into many variant runs derived from top WCL logs.
+    # Free-form string so future modes don't need another migration.
+    mode: Mapped[str] = mapped_column(
+        String(32), default="standard", server_default="standard",
+        nullable=False, index=True,
+    )
     status: Mapped[SimulationStatus] = mapped_column(
         PgEnum(SimulationStatus, name="simulation_status"),
         default=SimulationStatus.pending,

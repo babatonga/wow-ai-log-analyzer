@@ -54,10 +54,16 @@ class LoadoutIn(BaseModel):
     the ``talents=…``/``class_talents=…``/``spec_talents=…`` lines, or
     a single B64 talent string the in-game UI exports). Empty means
     "use whatever the base /simc profile already has".
+
+    ``loadout_code`` is the original Blizzard base64 export string (the
+    single token that round-trips with the in-game UI). The standard
+    /simulations flow leaves it empty; the talent-finder flow fills it
+    so the result UI can show a copy-to-clipboard token per variant.
     """
 
     name: str = Field(default="", max_length=120)
     talents: str = Field(default="", max_length=20000)
+    loadout_code: str = Field(default="", max_length=4096)
 
 
 class SimulationCreate(BaseModel):
@@ -139,6 +145,9 @@ class SimulationOut(BaseModel):
     iterations: int
     precision: Precision
     custom_overrides: CustomProfileOverrides | None = None
+    mode: str = "standard"
+    """Sim mode: ``"standard"`` or ``"talent_finder"``. Drives which UI
+    template the frontend renders."""
     status: SimulationStatus
     error: str | None
     started_at: datetime | None

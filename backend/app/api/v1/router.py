@@ -11,6 +11,7 @@ from app.api.v1 import (
     reports,
     shared_analyses,
     simulations,
+    talent_finder,
     top_logs,
     users,
     wcl_oauth,
@@ -34,3 +35,6 @@ api_router.include_router(
     shared_analyses.router, prefix="/shared-analyses", tags=["shared-analyses"]
 )
 api_router.include_router(simulations.router, prefix="/simulations", tags=["simulations"])
+api_router.include_router(
+    talent_finder.router, prefix="/talent-finder", tags=["talent-finder"]
+)
