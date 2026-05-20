@@ -762,7 +762,11 @@ async def _run_simc_once(
         # count (Patchwerk, Helter Skelter, etc.).
         if req.fight_style.lower() != "dungeonslice":
             args.append(f"desired_targets={req.desired_targets}")
-        if req.target_error is not None:
+        # A seeded retry (segfault recovery) passes ``deterministic=1``,
+        # which simc refuses to combine with a non-zero ``target_error``
+        # ("Setup failure"). On those retries we drop target_error and
+        # let the fixed ``iterations`` count govern instead.
+        if req.target_error is not None and "deterministic=1" not in extra_args:
             args.append(f"target_error={req.target_error}")
         if req.max_time is not None:
             # Vary length around the requested duration just like simcs
