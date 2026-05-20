@@ -12,7 +12,11 @@ import pytest
 
 from app.services.talents import decode_loadout, get_dataset
 from app.services.talents.finder import (
+    apply_flips,
     cluster_loadouts,
+    combine_flip_variants,
+    consensus_baseline,
+    enumerate_choice_flips,
     generate_build_variants,
     materialize_variants,
 )
@@ -196,6 +200,62 @@ def test_materialize_labels_are_unique(dataset, karatepummel_loadouts):
     builds = materialize_variants(variants, dataset, spec_id=KARATEPUMMEL_SPEC)
     labels = [b.label for b in builds]
     assert len(labels) == len(set(labels))
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity sweep
+# ---------------------------------------------------------------------------
+
+
+def test_consensus_baseline_is_a_valid_build(dataset, karatepummel_loadouts):
+    result = cluster_loadouts(
+        karatepummel_loadouts, dataset, spec_id=KARATEPUMMEL_SPEC, threshold=0.95
+    )
+    base = consensus_baseline(result.clusters[0])
+    assert base, "consensus baseline should have talent picks"
+    assert all(rank > 0 for rank in base.values())
+
+
+def test_enumerate_choice_flips_are_clean_swaps(dataset, karatepummel_loadouts):
+    result = cluster_loadouts(
+        karatepummel_loadouts, dataset, spec_id=KARATEPUMMEL_SPEC, threshold=0.95
+    )
+    cluster = result.clusters[0]
+    base = consensus_baseline(cluster)
+    flips = enumerate_choice_flips(base, cluster, dataset)
+    assert flips, "Windwalker has choice nodes — expected some flips"
+    for f in flips:
+        # baseline holds the 'remove' entry, not the 'add' entry
+        assert base.get(f.remove[0], 0) > 0
+        assert base.get(f.add[0], 0) == 0
+        # applying the flip is a clean 1-for-1 swap
+        v = apply_flips(base, [f])
+        assert f.remove[0] not in v
+        assert v[f.add[0]] == f.add[1]
+        assert len(v) == len(base)
+
+
+def test_combine_flip_variants_respects_cap(dataset, karatepummel_loadouts):
+    result = cluster_loadouts(
+        karatepummel_loadouts, dataset, spec_id=KARATEPUMMEL_SPEC, threshold=0.95
+    )
+    cluster = result.clusters[0]
+    base = consensus_baseline(cluster)
+    flips = enumerate_choice_flips(base, cluster, dataset)
+    for cap in (1, 4, 16, 64):
+        variants = combine_flip_variants(base, flips, max_builds=cap)
+        assert 1 <= len(variants) <= cap, f"cap={cap}: got {len(variants)}"
+    # the baseline (empty subset) is always one of the combos
+    variants = combine_flip_variants(base, flips, max_builds=64)
+    assert any(v == base for v in variants)
+
+
+def test_combine_empty_flips_returns_just_baseline(dataset, karatepummel_loadouts):
+    result = cluster_loadouts(
+        karatepummel_loadouts, dataset, spec_id=KARATEPUMMEL_SPEC, threshold=0.95
+    )
+    base = consensus_baseline(result.clusters[0])
+    assert combine_flip_variants(base, [], max_builds=64) == [base]
 
 
 # ---------------------------------------------------------------------------

@@ -364,6 +364,127 @@ def materialize_variants(
 
 
 # ---------------------------------------------------------------------------
+# Sensitivity sweep — sim-driven, one-button-grounded talent search
+# ---------------------------------------------------------------------------
+#
+# The cluster approach above mines the *manual-play* meta. But the
+# one-button optimum can sit on a talent the whole meta agrees on (a
+# consensus node the cluster freezes). The sweep fixes that: start from
+# the meta-consensus build, flip each choice node one at a time, and let
+# the simulator measure which flips actually gain DPS under one-button.
+# No talent->spell dependency graph, no AI — the sim is ground truth.
+
+
+@dataclass(frozen=True)
+class TalentFlip:
+    """A single-talent change relative to a baseline build.
+
+    ``remove`` / ``add`` are ``(entry_id, rank)`` pairs — applying the
+    flip drops ``remove`` from the baseline and sets ``add``. Stage 1
+    only flips CHOICE nodes (pick the sibling entry), so both are
+    rank-1 singletons.
+    """
+
+    node_id: int
+    node_name: str
+    remove: tuple[int, int]
+    add: tuple[int, int]
+
+
+def consensus_baseline(cluster: HeroTreeCluster) -> dict[int, int]:
+    """The single most-representative build for a hero-tree cluster.
+
+    Every consensus pick, plus the *majority* pick at every contested
+    node. Minority-only nodes are dropped. Returned as a flat
+    ``{entry_id: rank}`` dict — the sweep's starting point. Costs no
+    sims.
+    """
+    base: dict[int, int] = {}
+    for np_ in cluster.nodes.values():
+        if np_.classification == "consensus" and np_.consensus_pick is not None:
+            for entry_id, rank in np_.consensus_pick:
+                base[entry_id] = rank
+        elif np_.classification == "contested" and np_.contested_picks:
+            for entry_id, rank in np_.contested_picks[0]:  # most-supported
+                base[entry_id] = rank
+    return base
+
+
+def apply_flips(
+    baseline: dict[int, int], flips: Iterable[TalentFlip]
+) -> dict[int, int]:
+    """Return ``baseline`` with every flip applied (non-mutating)."""
+    variant = dict(baseline)
+    for f in flips:
+        variant.pop(f.remove[0], None)
+        variant[f.add[0]] = f.add[1]
+    return variant
+
+
+def enumerate_choice_flips(
+    baseline: dict[int, int],
+    cluster: HeroTreeCluster,
+    dataset: TraitDataset,
+) -> list[TalentFlip]:
+    """Every single-choice-node flip available from ``baseline``.
+
+    For each CHOICE node the baseline cleanly picks one entry of, emit
+    a flip to each sibling entry. Nodes the baseline skips entirely are
+    left for Stage 2 (point reallocation).
+    """
+    flips: list[TalentFlip] = []
+    for np_ in cluster.nodes.values():
+        if np_.node_type != NODE_CHOICE:
+            continue
+        entries = dataset.entries_at_node(np_.node_id)
+        picked = [
+            (e.entry_id, baseline[e.entry_id])
+            for e in entries
+            if baseline.get(e.entry_id, 0) > 0
+        ]
+        if len(picked) != 1:
+            continue  # baseline doesn't cleanly pick one — skip
+        cur_id, cur_rank = picked[0]
+        for alt in entries:
+            if alt.entry_id == cur_id:
+                continue
+            flips.append(
+                TalentFlip(
+                    node_id=np_.node_id,
+                    node_name=np_.name,
+                    remove=(cur_id, cur_rank),
+                    add=(alt.entry_id, 1),
+                )
+            )
+    return flips
+
+
+def combine_flip_variants(
+    baseline: dict[int, int],
+    flips: list[TalentFlip],
+    *,
+    max_builds: int,
+) -> list[dict[int, int]]:
+    """Cartesian-combine the given flips into variant dicts.
+
+    Each flip is an independent on/off toggle, so N flips yield 2^N
+    variants (the empty subset == the baseline itself). Capped: only
+    the first ``floor(log2(max_builds))`` flips are combined — callers
+    should pass ``flips`` already sorted best-delta-first so the cap
+    keeps the most promising ones.
+    """
+    if not flips:
+        return [dict(baseline)]
+    k = min(len(flips), max(0, max_builds.bit_length() - 1))
+    selected = flips[:k]
+    variants: list[dict[int, int]] = []
+    for mask in range(1 << len(selected)):
+        subset = [selected[i] for i in range(len(selected)) if mask & (1 << i)]
+        variants.append(apply_flips(baseline, subset))
+    return variants
+
+
+# ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
 
