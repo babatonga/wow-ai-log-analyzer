@@ -474,6 +474,9 @@ export type SimcPrecision = "fast" | "medium" | "precise";
 export interface SimulationLoadoutIn {
   name: string;
   talents: string;
+  /** Blizzard base64 export string. Populated for talent-finder runs,
+   * empty string for standard sims (where the user pasted talents inline). */
+  loadout_code?: string;
 }
 
 export interface CustomProfileOverrides {
@@ -528,6 +531,10 @@ export interface Simulation {
   iterations: number;
   precision: SimcPrecision;
   custom_overrides: CustomProfileOverrides | null;
+  /** Sim mode. "standard" = the original compare-loadouts flow,
+   * "talent_finder" = top-15-derived variant batch. The frontend
+   * picks the result UI off this field. */
+  mode?: string;
   status: SimulationStatus;
   error: string | null;
   started_at: string | null;

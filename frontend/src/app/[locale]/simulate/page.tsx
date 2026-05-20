@@ -7,6 +7,8 @@ import { use, useEffect, useMemo, useState } from "react";
 
 import { AuthGuard } from "@/components/AuthGuard";
 import { EmptyState } from "@/components/EmptyState";
+import { TalentFinderForm } from "@/components/simulate/TalentFinderForm";
+import { TalentFinderResults } from "@/components/simulate/TalentFinderResults";
 import { Button, Card, FieldError, Input, Label } from "@/components/ui";
 import type { Locale } from "@/i18n/config";
 import { ApiClientError, apiFetch } from "@/lib/api";
@@ -49,6 +51,9 @@ function SimulateView({ locale }: { locale: Locale }) {
     refetchOnWindowFocus: false,
   });
 
+  // Which simulation flow is active. "standard" = the original
+  // compare-loadouts form; "talent_finder" = the One-Button-Talent-Finder.
+  const [mode, setMode] = useState<"standard" | "talent_finder">("standard");
   const [profile, setProfile] = useState("");
   const [label, setLabel] = useState("");
   const [selectedFights, setSelectedFights] = useState<SimcFightProfile[]>([
@@ -262,6 +267,34 @@ function SimulateView({ locale }: { locale: Locale }) {
         )}
       </header>
 
+      {/* Mode switch: standard compare flow vs. the Talent-Finder. */}
+      <div className="inline-flex rounded-lg border border-bg-3 bg-bg-2 p-1">
+        {(["standard", "talent_finder"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            className={[
+              "rounded-md px-4 py-1.5 text-sm transition",
+              mode === m
+                ? "bg-accent/15 text-accent"
+                : "text-zinc-400 hover:text-zinc-200",
+            ].join(" ")}
+          >
+            {m === "standard"
+              ? t("simulate.modeStandard")
+              : t("simulate.modeTalentFinder")}
+          </button>
+        ))}
+      </div>
+
+      {mode === "talent_finder" && (
+        <TalentFinderForm
+          onSimulationStarted={(sim) => setActiveSimulationId(sim.id)}
+        />
+      )}
+
+      {mode === "standard" && (
       <Card className="space-y-4">
         <div>
           <Label htmlFor="sim-label">{t("simulate.labelInputLabel")}</Label>
@@ -487,9 +520,14 @@ function SimulateView({ locale }: { locale: Locale }) {
           )}
         </div>
       </Card>
+      )}
 
       {activeSimulationId && detailQ.data && (
-        <SimulationDetail simulation={detailQ.data} locale={locale} />
+        detailQ.data.mode === "talent_finder" ? (
+          <TalentFinderResults simulation={detailQ.data} />
+        ) : (
+          <SimulationDetail simulation={detailQ.data} locale={locale} />
+        )
       )}
 
       <Card>
