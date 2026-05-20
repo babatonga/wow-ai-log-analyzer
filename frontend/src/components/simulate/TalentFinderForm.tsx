@@ -40,7 +40,6 @@ export function TalentFinderForm({ onSimulationStarted }: Props) {
   >("single_target");
   const [strategy, setStrategy] = useState<TalentFinderStrategy>("sweep");
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [topN, setTopN] = useState(15);
   const [threshold, setThreshold] = useState(0.25);
   const [err, setErr] = useState<string | null>(null);
 
@@ -60,7 +59,6 @@ export function TalentFinderForm({ onSimulationStarted }: Props) {
           simc_profile: profile,
           fight_profile_key: fightProfile,
           precision: "fast",
-          top_n: topN,
           threshold,
           strategy,
         },
@@ -216,46 +214,31 @@ export function TalentFinderForm({ onSimulationStarted }: Props) {
           <summary className="cursor-pointer text-sm text-zinc-400 hover:text-zinc-200">
             {t("simulate.talentFinder.advanced")}
           </summary>
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
-            <div>
-              <Label htmlFor="tf-top-n">
-                {t("simulate.talentFinder.topNLabel")}
-              </Label>
-              <Input
-                id="tf-top-n"
-                type="number"
-                min={1}
-                max={30}
-                value={topN}
-                onChange={(e) => setTopN(parseInt(e.target.value, 10) || 15)}
-              />
-              <p className="mt-1 text-xs text-zinc-500">
-                {t("simulate.talentFinder.topNHint")}
-              </p>
-            </div>
-            <div>
-              <Label htmlFor="tf-threshold">
-                {t("simulate.talentFinder.thresholdLabel")}
-              </Label>
-              <Input
-                id="tf-threshold"
-                type="number"
-                min={0.05}
-                max={0.95}
-                step={0.05}
-                value={threshold}
-                onChange={(e) =>
-                  setThreshold(parseFloat(e.target.value) || 0.3)
-                }
-              />
-              <p className="mt-1 text-xs text-zinc-500">
-                {t("simulate.talentFinder.thresholdHint")}
-              </p>
-            </div>
+          <div className="mt-3">
+            <Label htmlFor="tf-threshold">
+              {t("simulate.talentFinder.thresholdLabel")}
+            </Label>
+            <Input
+              id="tf-threshold"
+              type="number"
+              min={0.05}
+              max={0.95}
+              step={0.05}
+              value={threshold}
+              onChange={(e) => setThreshold(parseFloat(e.target.value) || 0.25)}
+              className="!w-40"
+            />
+            <p className="mt-1 text-xs text-zinc-500">
+              {t("simulate.talentFinder.thresholdHint")}
+            </p>
           </div>
         </details>
 
-        <div className="flex items-center gap-3 pt-2">
+        <p className="rounded-md border border-bg-3 bg-bg-2/40 px-3 py-2 text-xs text-zinc-400">
+          {t("simulate.talentFinder.runtimeNote")}
+        </p>
+
+        <div className="flex items-center gap-3 pt-1">
           <Button
             type="submit"
             disabled={runMut.isPending || profile.trim().length < 20}
