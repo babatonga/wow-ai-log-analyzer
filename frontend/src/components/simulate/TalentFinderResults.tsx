@@ -5,11 +5,13 @@ import { Check, Copy, Crown, Sparkles } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { Button, Card } from "@/components/ui";
+import type { Locale } from "@/i18n/config";
 import { formatNumber } from "@/lib/format";
 import type { Simulation } from "@/types/api";
 
 interface Props {
   simulation: Simulation;
+  locale: Locale;
 }
 
 interface RankedBuild {
@@ -22,7 +24,7 @@ interface RankedBuild {
 
 const TOP_N_RENDERED = 5;
 
-export function TalentFinderResults({ simulation }: Props) {
+export function TalentFinderResults({ simulation, locale }: Props) {
   const t = useTranslations();
 
   const succeeded = (simulation.runs ?? []).filter(
@@ -48,7 +50,8 @@ export function TalentFinderResults({ simulation }: Props) {
       dps_stddev: entry.run.dps_stddev,
     }));
 
-  if (ranked.length === 0) {
+  const [winner, ...rest] = ranked;
+  if (!winner) {
     return (
       <Card>
         <p className="text-sm text-zinc-400">
@@ -58,8 +61,7 @@ export function TalentFinderResults({ simulation }: Props) {
     );
   }
 
-  const winner = ranked[0];
-  const topFive = ranked.slice(0, TOP_N_RENDERED);
+  const topFive = [winner, ...rest].slice(0, TOP_N_RENDERED);
 
   return (
     <div className="space-y-4">
@@ -86,6 +88,7 @@ export function TalentFinderResults({ simulation }: Props) {
           build={b}
           winnerDps={winner.dps_mean}
           isWinner={b.rank === 1}
+          locale={locale}
         />
       ))}
     </div>
@@ -96,9 +99,10 @@ interface BuildCardProps {
   build: RankedBuild;
   winnerDps: number;
   isWinner: boolean;
+  locale: Locale;
 }
 
-function BuildCard({ build, winnerDps, isWinner }: BuildCardProps) {
+function BuildCard({ build, winnerDps, isWinner, locale }: BuildCardProps) {
   const t = useTranslations();
   const [copied, setCopied] = useState(false);
 
@@ -133,7 +137,7 @@ function BuildCard({ build, winnerDps, isWinner }: BuildCardProps) {
         </div>
         <div className="flex items-baseline gap-2">
           <span className="font-mono text-xl tabular-nums text-zinc-100">
-            {formatNumber(build.dps_mean)}
+            {formatNumber(build.dps_mean, locale)}
           </span>
           <span className="text-xs text-zinc-500">DPS</span>
           {!isWinner && (

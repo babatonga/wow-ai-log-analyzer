@@ -524,7 +524,7 @@ function SimulateView({ locale }: { locale: Locale }) {
 
       {activeSimulationId && detailQ.data && (
         detailQ.data.mode === "talent_finder" ? (
-          <TalentFinderResults simulation={detailQ.data} />
+          <TalentFinderResults simulation={detailQ.data} locale={locale} />
         ) : (
           <SimulationDetail simulation={detailQ.data} locale={locale} />
         )
