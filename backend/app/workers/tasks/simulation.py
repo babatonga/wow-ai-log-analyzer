@@ -58,6 +58,11 @@ _COMBINE_TARGET_ERROR = 0.15
 # phase bounded — only the 5 best-delta flips get Cartesian-expanded.
 _COMBINE_MAX_PER_TREE = 32
 
+# How many top screen builds per hero tree get a tight-precision
+# re-sim before the baseline is chosen — guards against the loose
+# screen ranking a noise-lucky build as its #1.
+_SCREEN_REFINE_TOP_K = 10
+
 
 async def _flip_parent(sim_id: uuid.UUID, **updates: Any) -> None:
     """Open a fresh transaction and patch the parent row. Used both
@@ -431,16 +436,35 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
         return planned, merged
 
     try:
-        # ---- Phase 0: screen the meta pool ----
+        # ---- Phase 0: screen the meta pool (loose target_error) ----
         await _sim_batch(planned_screen, loadouts, _SCREEN_TARGET_ERROR)
         dps0 = await _read_dps()
 
-        # ---- Phase 1: per hero tree, best screen build → baseline + flips ----
         screen_by_tree: dict[int, list[tuple[int, dict]]] = defaultdict(list)
         for li, lo in enumerate(loadouts):
             if lo.get("tf_role") == "screen" and lo.get("tf_hero_tree") is not None:
                 screen_by_tree[lo["tf_hero_tree"]].append((li, lo))
 
+        # ---- Phase 0.5: re-sim the top-K screen builds per hero tree at
+        # tight precision. The loose screen ranks ~400 builds noisily, so
+        # its #1 can be a fluke; re-simming the top-K tight makes the
+        # baseline pick trustworthy.
+        run_by_index = {p["loadout_index"]: p["run_id"] for p in planned_screen}
+        refine_planned: list[dict[str, Any]] = []
+        for items in screen_by_tree.values():
+            ranked = sorted(
+                ((dps0.get(li, 0.0), li) for li, _ in items), reverse=True
+            )
+            for _, li in ranked[:_SCREEN_REFINE_TOP_K]:
+                if li in run_by_index:
+                    refine_planned.append(
+                        {"run_id": run_by_index[li], "loadout_index": li}
+                    )
+        if refine_planned:
+            await _sim_batch(refine_planned, loadouts, _COMBINE_TARGET_ERROR)
+            dps0 = await _read_dps()  # top-K now carry tight-precision DPS
+
+        # ---- Phase 1: per hero tree, best screen build → baseline + flips ----
         phase1_loadouts: list[dict[str, Any]] = []
         for tree, items in screen_by_tree.items():
             scored = [
