@@ -11,6 +11,7 @@ import type {
   FightProfileKey,
   Simulation,
   TalentFinderEncounterMap,
+  TalentFinderStrategy,
 } from "@/types/api";
 
 interface Props {
@@ -37,9 +38,10 @@ export function TalentFinderForm({ onSimulationStarted }: Props) {
   const [fightProfile, setFightProfile] = useState<
     typeof SUPPORTED_PROFILES[number]
   >("single_target");
+  const [strategy, setStrategy] = useState<TalentFinderStrategy>("sweep");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [topN, setTopN] = useState(15);
-  const [threshold, setThreshold] = useState(0.3);
+  const [threshold, setThreshold] = useState(0.25);
   const [err, setErr] = useState<string | null>(null);
 
   const mapQ = useQuery({
@@ -57,9 +59,10 @@ export function TalentFinderForm({ onSimulationStarted }: Props) {
           label,
           simc_profile: profile,
           fight_profile_key: fightProfile,
-          precision: "fast", // 1000 iter per user spec
+          precision: "fast",
           top_n: topN,
           threshold,
+          strategy,
         },
       }),
     onSuccess: (sim) => {
@@ -173,6 +176,36 @@ export function TalentFinderForm({ onSimulationStarted }: Props) {
               onChange={(e) => setLabel(e.target.value)}
               placeholder={t("simulate.talentFinder.labelPlaceholder")}
             />
+          </div>
+        </div>
+
+        <div>
+          <Label>{t("simulate.talentFinder.strategyLabel")}</Label>
+          <div className="mt-1 grid gap-2 sm:grid-cols-2">
+            {(["sweep", "cluster"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStrategy(s)}
+                className={[
+                  "rounded-md border px-3 py-2 text-left text-sm transition",
+                  strategy === s
+                    ? "border-amber-500 bg-amber-500/10"
+                    : "border-bg-3 bg-bg-2 hover:border-zinc-500",
+                ].join(" ")}
+              >
+                <div
+                  className={
+                    strategy === s ? "font-medium text-amber-300" : "text-zinc-300"
+                  }
+                >
+                  {t(`simulate.talentFinder.strategy_${s}`)}
+                </div>
+                <div className="mt-0.5 text-xs text-zinc-500">
+                  {t(`simulate.talentFinder.strategy_${s}_hint`)}
+                </div>
+              </button>
+            ))}
           </div>
         </div>
 

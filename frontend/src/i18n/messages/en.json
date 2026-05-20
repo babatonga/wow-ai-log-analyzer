@@ -146,7 +146,14 @@
       "resultsWaiting": "Waiting for the first runs to finish…",
       "copy": "Copy",
       "copied": "Copied!",
-      "noLoadoutCode": "(no export code)"
+      "noLoadoutCode": "(no export code)",
+      "strategyLabel": "Search strategy",
+      "strategy_sweep": "Sim-driven sweep",
+      "strategy_sweep_hint": "Starts from the meta build, then sims each single talent change under one-button and combines the winners. Slower (~10-15 min), escapes the meta blind spot.",
+      "strategy_cluster": "Meta cluster",
+      "strategy_cluster_hint": "Expands the talent slots the top players disagree on. Fast (~3-5 min), but blind to talents the whole meta agrees on.",
+      "screeningTitle": "Single-talent screening",
+      "screeningHint": "Each talent change vs the consensus baseline ({baseline} DPS), measured under one-button. The combine round below explores the winners together."
     },
     "sidecarReady": "SimC sidecar ready.",
     "sidecarUnreachable": "SimC sidecar unreachable — ask an admin to start the simc service.",

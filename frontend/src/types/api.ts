@@ -477,6 +477,10 @@ export interface SimulationLoadoutIn {
   /** Blizzard base64 export string. Populated for talent-finder runs,
    * empty string for standard sims (where the user pasted talents inline). */
   loadout_code?: string;
+  /** Talent-finder sweep tags. "" for standard/cluster sims. */
+  tf_role?: "" | "baseline" | "sweep" | "combine";
+  tf_hero_tree?: number | null;
+  tf_flip?: { node_id: number; node_name: string } | null;
 }
 
 export interface CustomProfileOverrides {
@@ -608,6 +612,8 @@ export type FightProfileKey =
   | "council"
   | "mythic_plus"
   | "custom";
+
+export type TalentFinderStrategy = "cluster" | "sweep";
 
 export interface TalentFinderEncounterMapEntry {
   encounter_id: number;

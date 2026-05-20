@@ -146,7 +146,14 @@
       "resultsWaiting": "Warte auf die ersten Runs…",
       "copy": "Kopieren",
       "copied": "Kopiert!",
-      "noLoadoutCode": "(kein Export-Code)"
+      "noLoadoutCode": "(kein Export-Code)",
+      "strategyLabel": "Suchstrategie",
+      "strategy_sweep": "Sim-getriebener Sweep",
+      "strategy_sweep_hint": "Startet vom Meta-Build, simuliert jede einzelne Talent-Änderung unter One-Button und kombiniert die Gewinner. Langsamer (~10-15 min), umgeht den Meta-Blind-Spot.",
+      "strategy_cluster": "Meta-Cluster",
+      "strategy_cluster_hint": "Expandiert die Talent-Slots, bei denen die Top-Spieler uneinig sind. Schnell (~3-5 min), aber blind für meta-einstimmige Talente.",
+      "screeningTitle": "Einzel-Talent-Screening",
+      "screeningHint": "Jede Talent-Änderung vs. Konsens-Baseline ({baseline} DPS), gemessen unter One-Button. Die Combine-Runde unten kombiniert die Gewinner."
     },
     "sidecarReady": "SimC-Sidecar bereit.",
     "sidecarUnreachable": "SimC-Sidecar nicht erreichbar — Admin muss den simc-Service starten.",
