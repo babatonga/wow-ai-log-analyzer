@@ -315,6 +315,63 @@ def decode_loadout(
     return result
 
 
+def decoded_from_talent_tree(
+    talent_tree: list[dict],
+    *,
+    spec_id: int,
+    dataset: TraitDataset,
+) -> DecodedLoadout:
+    """Build a :class:`DecodedLoadout` from WCL's legacy ``talentTree`` shape.
+
+    WCL's ``combatantInfo`` serves talents in one of two forms: a base64
+    ``talentLoadout`` code (handled by :func:`decode_loadout`) or — for
+    a lot of logs — a structured ``talentTree`` list of
+    ``{"id": entry_id, "rank": rank, "nodeID": node_id}`` dicts.
+
+    ``id`` is the TraitNodeEntry.ID (our ``entry_id``); the rest of the
+    entry metadata (tree, node, sub-tree, name) is resolved from the
+    trait dataset. ``spec_id`` must be supplied by the caller — the
+    structured form, unlike the base64 code, doesn't carry it.
+
+    Unknown entry-ids (dataset/build skew) are skipped with an INFO log
+    rather than raising, so one stale row doesn't sink a whole cluster.
+    """
+    selections: list[SelectedEntry] = []
+    for item in talent_tree:
+        if not isinstance(item, dict):
+            continue
+        try:
+            entry_id = int(item["id"])
+            rank = int(item.get("rank", 1))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if rank <= 0:
+            continue
+        meta = dataset._by_entry_id.get(entry_id)
+        if meta is None:
+            logger.info(
+                "talentTree: entry_id %s not in dataset (build skew?) — skipping",
+                entry_id,
+            )
+            continue
+        selections.append(
+            SelectedEntry(
+                entry_id=entry_id,
+                rank=rank,
+                tree_index=meta.tree_index,
+                node_id=meta.node_id,
+                sub_tree_id=meta.sub_tree_id,
+                name=meta.name,
+                is_granted=False,
+            )
+        )
+    return DecodedLoadout(
+        version=_LOADOUT_SERIALIZATION_VERSION,
+        spec_id=spec_id,
+        selections=selections,
+    )
+
+
 def _full_rank_for_node(
     node_id: int, entries: list[TraitEntry], chosen: TraitEntry
 ) -> int:

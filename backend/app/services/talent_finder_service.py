@@ -40,7 +40,7 @@ from app.services.talents import (
     decode_loadout,
     get_dataset,
 )
-from app.services.talents.decoder import TalentDecodeError
+from app.services.talents.decoder import TalentDecodeError, decoded_from_talent_tree
 from app.services.talents.finder import (
     BuildExplosionError,
     ClusterResult,
@@ -254,7 +254,9 @@ async def build_variants_for_spec_encounter(
     )
     n_considered = len(rows)
 
-    decoded, decode_diagnostics = _decode_all(rows, dataset)
+    decoded, decode_diagnostics = _decode_all(
+        rows, dataset, spec_id=spec.wcl_spec_id
+    )
     n_used = len(decoded)
 
     diagnostics: list[str] = list(decode_diagnostics)
@@ -369,19 +371,21 @@ async def _load_top_logs(
 def _decode_all(
     rows: Iterable[TopLog],
     dataset: TraitDataset,
+    *,
+    spec_id: int,
 ) -> tuple[list[DecodedLoadout], list[str]]:
-    """Decode every TopLog's stored loadout code we can.
+    """Decode every TopLog's stored talents into a DecodedLoadout.
 
-    Skips rows where:
+    WCL stores talents in ``TopLog.detail_payload['talents_loadout']`` in
+    one of two shapes:
 
-    * ``detail_payload`` is missing or has no ``talents_loadout`` field
-    * ``talents_loadout`` is the legacy list-of-dicts shape (we'd need
-      a separate codec to handle that — out of scope for v1)
-    * the base64 decode itself fails
+    * a base64 Blizzard loadout *string* → :func:`decode_loadout`
+    * a structured ``talentTree`` *list* of ``{id, rank, nodeID}`` dicts
+      → :func:`decoded_from_talent_tree` (needs ``spec_id`` since the
+      structured form doesn't carry it)
 
-    Returns the successfully-decoded loadouts plus per-skip
-    diagnostics so the UI can explain why fewer than top-N usable
-    loadouts came back.
+    Skips rows with no talent data or an unparseable code, collecting a
+    per-skip diagnostic so the UI can explain a short cluster.
     """
     decoded: list[DecodedLoadout] = []
     diag: list[str] = []
@@ -393,18 +397,25 @@ def _decode_all(
                 f"rank {r.rank} ({r.character_name}): no talent loadout in detail"
             )
             continue
-        if not isinstance(loadout, str):
-            # Legacy combatantInfo.talentTree shape — list of dicts.
-            # Building a Blizzard base64 from this is doable (we have
-            # the encoder) but needs node_id → entry_id mapping; punt
-            # until we hit logs that don't carry the modern string.
-            diag.append(
-                f"rank {r.rank} ({r.character_name}): legacy talentTree "
-                "shape (not yet supported)"
-            )
-            continue
         try:
-            decoded.append(decode_loadout(loadout, dataset=dataset))
+            if isinstance(loadout, str):
+                decoded.append(decode_loadout(loadout, dataset=dataset))
+            elif isinstance(loadout, list):
+                ld = decoded_from_talent_tree(
+                    loadout, spec_id=spec_id, dataset=dataset
+                )
+                if not ld.selections:
+                    diag.append(
+                        f"rank {r.rank} ({r.character_name}): talentTree "
+                        "resolved to zero known entries"
+                    )
+                    continue
+                decoded.append(ld)
+            else:
+                diag.append(
+                    f"rank {r.rank} ({r.character_name}): unexpected "
+                    f"talents_loadout type {type(loadout).__name__}"
+                )
         except TalentDecodeError as exc:
             diag.append(
                 f"rank {r.rank} ({r.character_name}): decode failed — {exc}"
