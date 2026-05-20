@@ -106,26 +106,25 @@ async def run_talent_finder(
 
     if payload.strategy == "sweep":
         try:
-            phase1 = await talent_finder_service.build_sweep_phase1(
+            pool = await talent_finder_service.build_sweep_screen_pool(
                 session,
                 spec=spec,
                 encounter_id=entry.encounter_id,
-                threshold=payload.threshold,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("talent-finder: sweep phase-1 build failed")
+            logger.exception("talent-finder: sweep screen-pool build failed")
             raise ValidationAppError(
                 f"Couldn't build the sweep for "
                 f"{entry.encounter_name or entry.encounter_id} "
                 f"({exc.__class__.__name__}). The encounter ID may be wrong, "
                 f"or WCL is unreachable. Try again in a few minutes."
             ) from exc
-        if not phase1.loadouts:
+        if not pool.loadouts:
             raise ValidationAppError(
-                "Couldn't build a sweep baseline. Diagnostics: "
-                + "; ".join(phase1.diagnostics[:5])
+                "Couldn't build a sweep screening pool. Diagnostics: "
+                + "; ".join(pool.diagnostics[:5])
             )
-        loadout_entries = phase1.loadouts
+        loadout_entries = pool.loadouts
         sim_mode = "talent_finder_sweep"
         # The sweep converges on target_error; this is just the cap.
         iterations = max(iterations, 20000)

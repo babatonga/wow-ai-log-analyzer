@@ -46,14 +46,15 @@ logger = logging.getLogger(__name__)
 _MAX_ABILITIES_PER_RUN = 100
 
 # Talent-finder sweep convergence cutoffs (simc target_error, in %).
-# Phase 1 (screening many single-flip sims) runs looser/faster; phase 2
-# (the final combine ranking) runs tighter for a trustworthy winner.
-# Tighter than this makes the combine round run far too long for a
-# UI-triggered job (0.1% ≈ 40 min); 0.15% keeps it ~15 min.
+# Phase 0 screens the whole meta pool (cheapest), phase 1 the single
+# flips, phase 2 the final combine ranking (tightest, for a trustworthy
+# winner). Tighter than 0.15% makes the combine round run far too long
+# for a UI-triggered job.
+_SCREEN_TARGET_ERROR = 0.5
 _SWEEP_TARGET_ERROR = 0.3
 _COMBINE_TARGET_ERROR = 0.15
 
-# Cap on combine variants per hero tree (2^5). Keeps the second sim
+# Cap on combine variants per hero tree (2^5). Keeps the final sim
 # phase bounded — only the 5 best-delta flips get Cartesian-expanded.
 _COMBINE_MAX_PER_TREE = 32
 
@@ -296,18 +297,20 @@ async def run_simulation_task(_ctx: dict, simulation_id: str) -> None:
 
 
 async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
-    """Two-phase sim-driven talent sweep.
+    """Three-phase sim-driven talent sweep: screen → flip → combine.
 
-    The endpoint pre-creates the parent + phase-1 children (one
-    baseline + one per choice-flip, per hero tree). Here we:
+    The endpoint pre-creates the parent + phase-0 children — the
+    distinct real meta builds (``tf_role="screen"``). Here we:
 
-    1. Sim phase 1 (baseline + flips) — looser target_error, it's just
-       screening which flips gain DPS.
-    2. Per hero tree: rank the flips by measured delta vs the baseline,
-       Cartesian-combine the positive ones, append those combine
-       variants as new loadouts + child runs.
-    3. Sim phase 2 (the combine variants) — tighter target_error.
-    4. Roll up the parent status.
+    0. Screen: sim every real meta build under one-button (loosest
+       target_error). Sidesteps the bad-baseline trap — the pool's
+       real builds already cover the meta's point-allocation diversity.
+    1. Flip: per hero tree, take the best-screening build as the
+       baseline, generate one variant per single choice-node flip,
+       sim them (looser target_error).
+    2. Combine: per hero tree, rank flips by measured delta, drop the
+       clearly-bad ones, Cartesian-combine the rest, sim them (tight
+       target_error for a trustworthy winner).
     """
     from collections import defaultdict
 
@@ -318,13 +321,16 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
     from app.services.talents import get_dataset
     from app.services.talents.finder import (
         TalentFlip,
+        apply_flips,
         combine_flip_variants,
+        enumerate_choice_flips,
         materialize_variants,
     )
 
     sim_id = uuid.UUID(simulation_id)
+    dataset = get_dataset()
 
-    # ---- Load parent + plan phase 1 ----
+    # ---- Load parent + plan phase 0 (the pre-created screen pool) ----
     async with async_session_factory() as session:
         async with session.begin():
             parent = (
@@ -346,7 +352,7 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
                     select(SimulationRun).where(SimulationRun.simulation_id == sim_id)
                 )
             ).scalars().all()
-            planned_p1 = [
+            planned_screen = [
                 {"run_id": r.id, "loadout_index": r.loadout_index} for r in runs
             ]
 
@@ -358,11 +364,14 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
     except Exception:  # noqa: BLE001
         logger.warning("simc /version probe failed for %s", sim_id, exc_info=True)
 
-    try:
-        # ---- Phase 1: baseline + single flips ----
-        for plan in planned_p1:
+    async def _sim_batch(
+        planned: list[dict[str, Any]],
+        pool: list[dict[str, Any]],
+        target_error: float,
+    ) -> None:
+        for plan in planned:
             li = plan["loadout_index"]
-            lo = loadouts[li] if 0 <= li < len(loadouts) else {}
+            lo = pool[li] if 0 <= li < len(pool) else {}
             await _execute_run(
                 sim_id=sim_id,
                 run_id=plan["run_id"],
@@ -371,24 +380,112 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
                 rotation="blizzard",
                 fight_profile_key=fight_profile_key,
                 iterations=iterations,
-                target_error=_SWEEP_TARGET_ERROR,
+                target_error=target_error,
             )
 
-        # ---- Read phase-1 DPS ----
+    async def _read_dps() -> dict[int, float]:
         async with async_session_factory() as session:
-            p1_runs = (
+            rr = (
                 await session.execute(
                     select(SimulationRun).where(SimulationRun.simulation_id == sim_id)
                 )
             ).scalars().all()
-            dps_by_index = {
-                r.loadout_index: r.dps_mean
-                for r in p1_runs
-                if r.status == SimulationRunStatus.succeeded
-            }
+        return {
+            r.loadout_index: r.dps_mean
+            for r in rr
+            if r.status == SimulationRunStatus.succeeded
+        }
 
-        # ---- Phase 2: rank flips, build combine variants per hero tree ----
-        dataset = get_dataset()
+    async def _append_runs(
+        new_loadouts: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Append loadouts to the parent + create their child runs.
+        Returns ``(planned, merged_loadouts)``."""
+        async with async_session_factory() as session:
+            async with session.begin():
+                p = (
+                    await session.execute(
+                        select(Simulation).where(Simulation.id == sim_id)
+                    )
+                ).scalar_one()
+                base_idx = len(p.loadouts or [])
+                merged = list(p.loadouts or []) + new_loadouts
+                p.loadouts = merged
+                created = []
+                for i, lo in enumerate(new_loadouts):
+                    r = SimulationRun(
+                        simulation_id=sim_id,
+                        loadout_index=base_idx + i,
+                        loadout_name=lo["name"],
+                        rotation="blizzard",
+                        fight_profile_key=fight_profile_key,
+                        status=SimulationRunStatus.pending,
+                    )
+                    session.add(r)
+                    created.append(r)
+                await session.flush()
+                planned = [
+                    {"run_id": r.id, "loadout_index": r.loadout_index}
+                    for r in created
+                ]
+        return planned, merged
+
+    try:
+        # ---- Phase 0: screen the meta pool ----
+        await _sim_batch(planned_screen, loadouts, _SCREEN_TARGET_ERROR)
+        dps0 = await _read_dps()
+
+        # ---- Phase 1: per hero tree, best screen build → baseline + flips ----
+        screen_by_tree: dict[int, list[tuple[int, dict]]] = defaultdict(list)
+        for li, lo in enumerate(loadouts):
+            if lo.get("tf_role") == "screen" and lo.get("tf_hero_tree") is not None:
+                screen_by_tree[lo["tf_hero_tree"]].append((li, lo))
+
+        phase1_loadouts: list[dict[str, Any]] = []
+        for tree, items in screen_by_tree.items():
+            scored = [
+                (dps0[li], lo) for li, lo in items if li in dps0
+            ]
+            if not scored:
+                continue
+            scored.sort(key=lambda x: -x[0])
+            best_lo = scored[0][1]
+            spec_id = int(best_lo.get("tf_spec_id") or 0)
+            base_variant = {
+                int(k): v for k, v in (best_lo.get("tf_variant") or {}).items()
+            }
+            flips = enumerate_choice_flips(base_variant, dataset)
+            variants = [base_variant] + [
+                apply_flips(base_variant, [f]) for f in flips
+            ]
+            builds = materialize_variants(
+                variants, dataset, spec_id=spec_id, label_prefix=f"st{tree}b"
+            )
+            phase1_loadouts.append(
+                sweep_loadout_entry(
+                    builds[0], role="baseline", hero_tree=tree,
+                    spec_id=spec_id, variant=base_variant,
+                )
+            )
+            for flip, b in zip(flips, builds[1:]):
+                phase1_loadouts.append(
+                    sweep_loadout_entry(
+                        b, role="sweep", hero_tree=tree, spec_id=spec_id,
+                        flip={
+                            "node_id": flip.node_id,
+                            "node_name": flip.node_name,
+                            "remove": list(flip.remove),
+                            "add": list(flip.add),
+                        },
+                    )
+                )
+
+        if phase1_loadouts:
+            planned_p1, loadouts = await _append_runs(phase1_loadouts)
+            await _sim_batch(planned_p1, loadouts, _SWEEP_TARGET_ERROR)
+        dps1 = await _read_dps()
+
+        # ---- Phase 2: rank flips, Cartesian-combine the winners ----
         by_tree: dict[int, dict] = defaultdict(lambda: {"baseline": None, "flips": []})
         for li, lo in enumerate(loadouts):
             role = lo.get("tf_role")
@@ -407,7 +504,7 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
             if grp["baseline"] is None:
                 continue
             bidx, blo = grp["baseline"]
-            base_dps = dps_by_index.get(bidx)
+            base_dps = dps1.get(bidx)
             if base_dps is None:
                 continue  # baseline sim failed — can't rank its tree
             base_variant = {
@@ -415,19 +512,18 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
             }
             spec_id = int(blo.get("tf_spec_id") or 0)
             # Keep every flip that isn't *clearly* bad (worse than -0.5%
-            # vs the baseline). Near-zero and slightly-negative flips are
+            # vs the baseline). Near-zero / slightly-negative flips are
             # kept on purpose — two individually-neutral flips can be a
-            # positive synergy in combination, which the combine round
-            # would miss if we dropped them here.
+            # positive synergy in combination.
             drop_cutoff = -0.005 * base_dps
             ranked: list[tuple[float, TalentFlip]] = []
             for fidx, flo in grp["flips"]:
-                fdps = dps_by_index.get(fidx)
+                fdps = dps1.get(fidx)
                 if fdps is None:
                     continue
                 delta = fdps - base_dps
                 if delta < drop_cutoff:
-                    continue  # clearly bad — not worth combining
+                    continue
                 fm = flo.get("tf_flip") or {}
                 ranked.append((
                     delta,
@@ -439,9 +535,8 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
                     ),
                 ))
             ranked.sort(key=lambda x: -x[0])
-            flips_sorted = [tf for _, tf in ranked]
             variants = combine_flip_variants(
-                base_variant, flips_sorted, max_builds=per_tree_budget
+                base_variant, [tf for _, tf in ranked], max_builds=per_tree_budget
             )
             builds = materialize_variants(
                 variants, dataset, spec_id=spec_id, label_prefix=f"cmb{tree}_"
@@ -453,69 +548,18 @@ async def talent_finder_sweep_task(_ctx: dict, simulation_id: str) -> None:
                     )
                 )
 
-        # ---- Append combine loadouts + create phase-2 runs ----
-        planned_p2: list[dict[str, Any]] = []
-        all_loadouts = loadouts
         if combine_loadouts:
-            async with async_session_factory() as session:
-                async with session.begin():
-                    parent = (
-                        await session.execute(
-                            select(Simulation).where(Simulation.id == sim_id)
-                        )
-                    ).scalar_one()
-                    base_idx = len(parent.loadouts or [])
-                    all_loadouts = list(parent.loadouts or []) + combine_loadouts
-                    parent.loadouts = all_loadouts
-                    new_runs = []
-                    for i, lo in enumerate(combine_loadouts):
-                        r = SimulationRun(
-                            simulation_id=sim_id,
-                            loadout_index=base_idx + i,
-                            loadout_name=lo["name"],
-                            rotation="blizzard",
-                            fight_profile_key=fight_profile_key,
-                            status=SimulationRunStatus.pending,
-                        )
-                        session.add(r)
-                        new_runs.append(r)
-                    await session.flush()
-                    planned_p2 = [
-                        {"run_id": r.id, "loadout_index": r.loadout_index}
-                        for r in new_runs
-                    ]
-
-        # ---- Phase 2: sim the combine variants ----
-        for plan in planned_p2:
-            li = plan["loadout_index"]
-            lo = all_loadouts[li] if 0 <= li < len(all_loadouts) else {}
-            await _execute_run(
-                sim_id=sim_id,
-                run_id=plan["run_id"],
-                base_profile=base_profile,
-                loadout_talents=(lo.get("talents") or "").strip(),
-                rotation="blizzard",
-                fight_profile_key=fight_profile_key,
-                iterations=iterations,
-                target_error=_COMBINE_TARGET_ERROR,
-            )
+            planned_p2, loadouts = await _append_runs(combine_loadouts)
+            await _sim_batch(planned_p2, loadouts, _COMBINE_TARGET_ERROR)
 
         # ---- Roll up ----
-        async with async_session_factory() as session:
-            final_runs = (
-                await session.execute(
-                    select(SimulationRun).where(SimulationRun.simulation_id == sim_id)
-                )
-            ).scalars().all()
-        succeeded_any = any(
-            r.status == SimulationRunStatus.succeeded for r in final_runs
-        )
+        final_dps = await _read_dps()
         await _flip_parent(
             sim_id,
             status=SimulationStatus.succeeded
-            if succeeded_any
+            if final_dps
             else SimulationStatus.failed,
-            error=None if succeeded_any else "all sweep runs failed",
+            error=None if final_dps else "all sweep runs failed",
             finished_at=datetime.now(UTC),
         )
 

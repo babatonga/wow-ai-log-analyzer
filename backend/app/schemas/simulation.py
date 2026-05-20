@@ -64,6 +64,13 @@ class LoadoutIn(BaseModel):
     name: str = Field(default="", max_length=120)
     talents: str = Field(default="", max_length=20000)
     loadout_code: str = Field(default="", max_length=4096)
+    # Talent-finder sweep tags — empty/None for standard sims and the
+    # cluster strategy. ``tf_role`` is "baseline" | "sweep" | "combine";
+    # the result UI groups by it. ``tf_flip`` carries the flipped node's
+    # name so the UI can label a screening row.
+    tf_role: str = Field(default="", max_length=16)
+    tf_hero_tree: int | None = None
+    tf_flip: dict | None = None
 
 
 class SimulationCreate(BaseModel):

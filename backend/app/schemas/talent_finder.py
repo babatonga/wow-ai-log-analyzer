@@ -92,7 +92,11 @@ class TalentFinderRunIn(BaseModel):
     1000-iter over a 25-iter screen + 1000-iter refine two-stage."""
 
     top_n: int = Field(default=15, ge=1, le=30)
-    threshold: float = Field(default=0.30, ge=0.05, le=0.95)
+    threshold: float = Field(default=0.25, ge=0.05, le=0.95)
+    """Cluster-strategy consensus threshold. Lower = more nodes count
+    as contested = more variants (still capped by ``max_builds``).
+    Ignored by the sweep strategy."""
+
     max_builds: int = Field(default=256, ge=1, le=1024)
     strategy: TalentFinderStrategy = "cluster"
     """Which search strategy to run — see :data:`TalentFinderStrategy`."""

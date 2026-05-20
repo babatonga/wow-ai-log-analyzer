@@ -234,7 +234,7 @@ def cluster_loadouts(
     hero_dist: Counter[int] = Counter()
     by_tree: dict[int, list[DecodedLoadout]] = defaultdict(list)
     for ld in relevant:
-        sub = _hero_sub_tree(ld)
+        sub = hero_sub_tree(ld)
         if sub is None:
             continue
         hero_dist[sub] += 1
@@ -392,12 +392,14 @@ class TalentFlip:
 
 
 def consensus_baseline(cluster: HeroTreeCluster) -> dict[int, int]:
-    """The single most-representative build for a hero-tree cluster.
+    """The per-node-majority build for a hero-tree cluster.
 
     Every consensus pick, plus the *majority* pick at every contested
-    node. Minority-only nodes are dropped. Returned as a flat
-    ``{entry_id: rank}`` dict — the sweep's starting point. Costs no
-    sims.
+    node. WARNING: this can Frankenstein incompatible picks together —
+    talents have synergies, and the majority option at node A and the
+    majority at node B may come from different player strategies. For
+    the sweep baseline prefer :func:`top_ranked_baseline` (a real,
+    coherent build). Kept for diagnostics / completeness.
     """
     base: dict[int, int] = {}
     for np_ in cluster.nodes.values():
@@ -408,6 +410,26 @@ def consensus_baseline(cluster: HeroTreeCluster) -> dict[int, int]:
             for entry_id, rank in np_.contested_picks[0]:  # most-supported
                 base[entry_id] = rank
     return base
+
+
+def top_ranked_baseline(cluster: HeroTreeCluster) -> dict[int, int]:
+    """The #1-ranked *actual* loadout in the cluster, as a variant dict.
+
+    Unlike :func:`consensus_baseline` this is a real, coherent build a
+    top player genuinely ran — the right starting point for the sweep,
+    which then flips choice nodes to adapt it to one-button. The
+    cluster's loadouts are rank-ordered (best DPS first), so element 0
+    is the top performer. Granted (baseline-free) entries are excluded
+    — simc re-adds them.
+    """
+    if not cluster.loadouts:
+        return {}
+    top = cluster.loadouts[0]
+    return {
+        sel.entry_id: sel.rank
+        for sel in top.selections
+        if not sel.is_granted and sel.rank > 0
+    }
 
 
 def apply_flips(
@@ -423,20 +445,26 @@ def apply_flips(
 
 def enumerate_choice_flips(
     baseline: dict[int, int],
-    cluster: HeroTreeCluster,
     dataset: TraitDataset,
 ) -> list[TalentFlip]:
     """Every single-choice-node flip available from ``baseline``.
 
     For each CHOICE node the baseline cleanly picks one entry of, emit
-    a flip to each sibling entry. Nodes the baseline skips entirely are
-    left for Stage 2 (point reallocation).
+    a flip to each sibling entry. Derived straight from the baseline's
+    own entries (via the dataset) — no cluster needed, so a worker can
+    call it on any chosen build. Nodes the baseline skips entirely are
+    left for a future point-reallocation stage.
     """
     flips: list[TalentFlip] = []
-    for np_ in cluster.nodes.values():
-        if np_.node_type != NODE_CHOICE:
+    seen_nodes: set[int] = set()
+    for entry_id in list(baseline):
+        meta = dataset._by_entry_id.get(entry_id)
+        if meta is None or meta.node_type != NODE_CHOICE:
             continue
-        entries = dataset.entries_at_node(np_.node_id)
+        if meta.node_id in seen_nodes:
+            continue
+        seen_nodes.add(meta.node_id)
+        entries = dataset.entries_at_node(meta.node_id)
         picked = [
             (e.entry_id, baseline[e.entry_id])
             for e in entries
@@ -450,13 +478,45 @@ def enumerate_choice_flips(
                 continue
             flips.append(
                 TalentFlip(
-                    node_id=np_.node_id,
-                    node_name=np_.name,
+                    node_id=meta.node_id,
+                    node_name=meta.name,
                     remove=(cur_id, cur_rank),
                     add=(alt.entry_id, 1),
                 )
             )
     return flips
+
+
+def distinct_builds(loadouts: list[DecodedLoadout]) -> list[DecodedLoadout]:
+    """Deduplicate loadouts by their (non-granted) selection set.
+
+    Input is rank-ordered (best first); output keeps the first — i.e.
+    best-ranked — occurrence of each distinct build. Used to turn a
+    raw 1000-log pool into the ~200-400 genuinely different builds
+    worth screening under one-button.
+    """
+    seen: set[frozenset[tuple[int, int]]] = set()
+    out: list[DecodedLoadout] = []
+    for ld in loadouts:
+        key = frozenset(
+            (s.entry_id, s.rank) for s in ld.selections if not s.is_granted
+        )
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(ld)
+    return out
+
+
+def loadout_variant(ld: DecodedLoadout) -> dict[int, int]:
+    """A decoded loadout as a flat ``{entry_id: rank}`` variant dict
+    (non-granted picks only) — the form :func:`materialize_variants`
+    and the sweep functions consume."""
+    return {
+        s.entry_id: s.rank
+        for s in ld.selections
+        if not s.is_granted and s.rank > 0
+    }
 
 
 def combine_flip_variants(
@@ -489,7 +549,7 @@ def combine_flip_variants(
 # ---------------------------------------------------------------------------
 
 
-def _hero_sub_tree(ld: DecodedLoadout) -> int | None:
+def hero_sub_tree(ld: DecodedLoadout) -> int | None:
     """The hero sub_tree_id this loadout is locked into.
 
     We prefer the TREE_SELECTION anchor (always present after the

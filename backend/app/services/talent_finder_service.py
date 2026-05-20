@@ -45,11 +45,11 @@ from app.services.talents.decoder import decoded_from_talent_tree
 from app.services.talents.finder import (
     ClusterResult,
     MaterializedBuild,
-    apply_flips,
     cluster_loadouts,
-    consensus_baseline,
-    enumerate_choice_flips,
+    distinct_builds,
     generate_build_variants,
+    hero_sub_tree,
+    loadout_variant,
     materialize_variants,
 )
 from app.services.wcl.client import WclClient
@@ -199,6 +199,11 @@ RANKING_SNAPSHOT_TTL_DAYS = 7
 """How long a cached WCL rankings snapshot stays fresh. Past this we
 refetch — matches the weekly cadence of the other WCL caches."""
 
+RANKING_POOL_PAGES = 10
+"""WCL characterRankings pages to fetch (100 logs each). 10 = top-1000:
+enough build diversity for the sweep's screening pool, and a minority
+hero tree shows up if anyone runs it."""
+
 
 @dataclass
 class TalentFinderRun:
@@ -243,38 +248,65 @@ def _wcl_spec_name(name_en: str) -> str:
 
 
 async def _wcl_fetch_rankings(
-    spec: GameSpec, encounter_id: int, wcl_client: WclClient | None
+    spec: GameSpec,
+    encounter_id: int,
+    wcl_client: WclClient | None,
+    *,
+    pages: int = RANKING_POOL_PAGES,
 ) -> list[dict]:
-    """Fetch one page (100) of characterRankings with inline talents.
+    """Fetch up to ``pages`` pages (100 logs each) of characterRankings
+    with inline talents.
 
     Returns a rank-ordered list of
     ``{"rank": int, "amount": float, "talents": [...]}`` — entries with
-    no talent data (private logs) are dropped.
+    no talent data (private logs) are dropped. Stops early if a page
+    comes back short (fewer than 100 ranked logs exist).
     """
-    variables = {
-        "encounterID": encounter_id,
-        "className": _wcl_class_name(spec.class_slug),
-        "specName": _wcl_spec_name(spec.name_en),
-        "metric": "dps",
-        "page": 1,
-    }
+
+    async def _one_page(client: WclClient, page: int) -> list[dict]:
+        payload = await client.query(
+            ENCOUNTER_RANKING_TALENTS,
+            {
+                "encounterID": encounter_id,
+                "className": _wcl_class_name(spec.class_slug),
+                "specName": _wcl_spec_name(spec.name_en),
+                "metric": "dps",
+                "page": page,
+            },
+        )
+        enc = (payload.get("worldData") or {}).get("encounter") or {}
+        cr = enc.get("characterRankings") or {}
+        return cr.get("rankings") or []
+
+    out: list[dict] = []
+    global_rank = 0
+
+    async def _collect(client: WclClient) -> None:
+        nonlocal global_rank
+        for page in range(1, pages + 1):
+            raw = await _one_page(client, page)
+            if not raw:
+                break  # no more ranked logs
+            for r in raw:
+                global_rank += 1
+                talents = r.get("talents")
+                if not talents or not isinstance(talents, list):
+                    continue  # private log / no combatant info
+                out.append(
+                    {
+                        "rank": global_rank,
+                        "amount": r.get("amount", 0),
+                        "talents": talents,
+                    }
+                )
+            if len(raw) < 100:
+                break  # last page
+
     if wcl_client is not None:
-        payload = await wcl_client.query(ENCOUNTER_RANKING_TALENTS, variables)
+        await _collect(wcl_client)
     else:
         async with WclClient() as client:
-            payload = await client.query(ENCOUNTER_RANKING_TALENTS, variables)
-
-    enc = (payload.get("worldData") or {}).get("encounter") or {}
-    cr = enc.get("characterRankings") or {}
-    raw = cr.get("rankings") or []
-    out: list[dict] = []
-    for i, r in enumerate(raw):
-        talents = r.get("talents")
-        if not talents or not isinstance(talents, list):
-            continue  # private log / no combatant info
-        out.append(
-            {"rank": i + 1, "amount": r.get("amount", 0), "talents": talents}
-        )
+            await _collect(client)
     return out
 
 
@@ -294,15 +326,19 @@ async def _get_ranking_snapshot(
     """
     snap = await session.get(TalentRankingSnapshot, (spec.slug, encounter_id))
     now = datetime.now(UTC)
+    # A snapshot from before the multi-page fetch holds only ~one page;
+    # treat those as stale too so the pool actually grows to top-1000.
+    big_enough = snap is not None and len(snap.rankings or []) >= 150
     fresh = (
         snap is not None
         and snap.fetched_at is not None
         and (now - snap.fetched_at) < timedelta(days=RANKING_SNAPSHOT_TTL_DAYS)
+        and big_enough
     )
     if snap is not None and fresh and not force_refresh:
         age_d = (now - snap.fetched_at).days
         return list(snap.rankings or []), [
-            f"using cached WCL rankings ({age_d}d old)"
+            f"using cached WCL rankings ({len(snap.rankings or [])} logs, {age_d}d old)"
         ]
 
     try:
@@ -404,9 +440,12 @@ async def build_variants_for_spec_encounter(
     # contested-node expansion within ``max_builds`` (most-split nodes
     # first), so no threshold auto-raise is needed — the threshold just
     # defines which nodes count as contested in the first place.
+    # ``max_per_hero_tree=None`` → classify over the *whole* top-1000
+    # pool: clustering is just counting (no sim cost) and more samples
+    # make the consensus/contested split far less noisy.
     cluster = cluster_loadouts(
         decoded, dataset, spec_id=blizzard_spec_id,
-        threshold=initial_threshold, max_per_hero_tree=top_n,
+        threshold=initial_threshold, max_per_hero_tree=None,
     )
     variants = generate_build_variants(cluster, dataset, max_builds=max_builds)
     builds = materialize_variants(variants, dataset, spec_id=blizzard_spec_id)
@@ -459,35 +498,44 @@ def sweep_loadout_entry(
     return entry
 
 
+SWEEP_SCREEN_POOL_CAP = 400
+"""Max distinct builds to screen per run (across all hero trees). A
+top-1000 pull dedups to a few hundred genuinely-different builds; this
+caps the phase-0 sim count so a run stays bounded even for a wildly
+divergent spec."""
+
+
 @dataclass
-class SweepPhase1:
-    """Phase-1 plan for a sensitivity-sweep run."""
+class SweepScreenPool:
+    """Phase-0 plan for a sensitivity-sweep run."""
 
     spec: GameSpec
     encounter_id: int
     loadouts: list[dict]
-    """``Simulation.loadouts`` entries — one baseline + its choice-flips
-    per hero tree, each tagged via :func:`sweep_loadout_entry`."""
+    """``Simulation.loadouts`` entries — the distinct real meta builds
+    to screen under one-button, each tagged ``tf_role="screen"`` via
+    :func:`sweep_loadout_entry`. The worker sims these, picks the best
+    per hero tree as the sweep baseline, then generates choice-flips."""
 
     diagnostics: list[str]
 
 
-async def build_sweep_phase1(
+async def build_sweep_screen_pool(
     session: AsyncSession,
     *,
     spec: GameSpec,
     encounter_id: int,
-    threshold: float = 0.30,
     dataset: TraitDataset | None = None,
     wcl_client: WclClient | None = None,
     force_refresh: bool = False,
-) -> SweepPhase1:
-    """Build the phase-1 loadout set for a sweep run.
+) -> SweepScreenPool:
+    """Build the phase-0 screening pool for a sweep run.
 
-    Per hero tree: the meta-consensus baseline build, plus one variant
-    for every single choice-node flip off that baseline. Phase 2 (the
-    worker) sims these, ranks the flips by measured DPS delta, and
-    Cartesian-combines the winners.
+    Pulls the top-1000 WCL logs, dedups to the distinct real builds,
+    groups them by hero tree. The worker sims every one under
+    one-button (cheap screen), picks the best per tree as the sweep
+    baseline — sidestepping the bad-baseline trap, since the pool's
+    real builds already cover the meta's point-allocation diversity.
     """
     if dataset is None:
         dataset = get_dataset()
@@ -504,51 +552,50 @@ async def build_sweep_phase1(
         if ld.selections:
             decoded.append(ld)
 
-    loadouts: list[dict] = []
     if not decoded:
-        return SweepPhase1(
+        return SweepScreenPool(
             spec=spec, encounter_id=encounter_id, loadouts=[],
             diagnostics=diagnostics + ["no usable talent data in WCL rankings"],
         )
 
-    cluster = cluster_loadouts(
-        decoded, dataset, spec_id=spec.wcl_spec_id,
-        threshold=threshold, max_per_hero_tree=DEFAULT_TOP_N,
-    )
-    for hc in cluster.clusters:
-        base_dict = consensus_baseline(hc)
-        if not base_dict:
+    # Group by hero tree, dedup to distinct builds (rank order kept).
+    by_tree: dict[int, list[DecodedLoadout]] = {}
+    for ld in decoded:
+        sub = hero_sub_tree(ld)
+        if sub is None or sub <= 0:
             continue
-        flips = enumerate_choice_flips(base_dict, hc, dataset)
-        variants = [base_dict] + [apply_flips(base_dict, [f]) for f in flips]
+        by_tree.setdefault(sub, []).append(ld)
+
+    loadouts: list[dict] = []
+    total = 0
+    for sub, lds in sorted(by_tree.items(), key=lambda kv: -len(kv[1])):
+        distinct = distinct_builds(lds)
+        if total + len(distinct) > SWEEP_SCREEN_POOL_CAP:
+            distinct = distinct[: max(0, SWEEP_SCREEN_POOL_CAP - total)]
+        if not distinct:
+            continue
+        total += len(distinct)
+        variants = [loadout_variant(d) for d in distinct]
         builds = materialize_variants(
             variants, dataset, spec_id=spec.wcl_spec_id,
-            label_prefix=f"st{hc.sub_tree_id}b",
+            label_prefix=f"st{sub}s",
         )
-        # builds[0] = baseline, builds[1:] align with flips
-        loadouts.append(
-            sweep_loadout_entry(
-                builds[0], role="baseline", hero_tree=hc.sub_tree_id,
-                spec_id=spec.wcl_spec_id, variant=base_dict,
-            )
-        )
-        for flip, build in zip(flips, builds[1:]):
+        for variant, build in zip(variants, builds):
             loadouts.append(
                 sweep_loadout_entry(
-                    build, role="sweep", hero_tree=hc.sub_tree_id,
-                    spec_id=spec.wcl_spec_id,
-                    flip={
-                        "node_id": flip.node_id,
-                        "node_name": flip.node_name,
-                        "remove": list(flip.remove),
-                        "add": list(flip.add),
-                    },
+                    build, role="screen", hero_tree=sub,
+                    spec_id=spec.wcl_spec_id, variant=variant,
                 )
             )
 
     if not loadouts:
-        diagnostics.append("no clusters produced a baseline build")
-    return SweepPhase1(
+        diagnostics.append("no hero-tree builds to screen")
+    else:
+        diagnostics.append(
+            f"screening {len(loadouts)} distinct builds "
+            f"across {len(by_tree)} hero tree(s)"
+        )
+    return SweepScreenPool(
         spec=spec, encounter_id=encounter_id,
         loadouts=loadouts, diagnostics=diagnostics,
     )
@@ -558,9 +605,10 @@ __all__ = [
     "DEFAULT_MAX_BUILDS",
     "DEFAULT_TOP_N",
     "RANKING_SNAPSHOT_TTL_DAYS",
-    "SweepPhase1",
+    "SWEEP_SCREEN_POOL_CAP",
+    "SweepScreenPool",
     "TalentFinderRun",
-    "build_sweep_phase1",
+    "build_sweep_screen_pool",
     "build_variants_for_spec_encounter",
     "sweep_loadout_entry",
 ]

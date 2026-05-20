@@ -16,9 +16,13 @@ from app.services.talents.finder import (
     cluster_loadouts,
     combine_flip_variants,
     consensus_baseline,
+    distinct_builds,
     enumerate_choice_flips,
     generate_build_variants,
+    hero_sub_tree,
+    loadout_variant,
     materialize_variants,
+    top_ranked_baseline,
 )
 
 # Unholy DK (spec 252): 1× Sanlayn (sub_tree 31), 3× Rider (sub_tree 32).
@@ -216,13 +220,32 @@ def test_consensus_baseline_is_a_valid_build(dataset, karatepummel_loadouts):
     assert all(rank > 0 for rank in base.values())
 
 
+def test_top_ranked_baseline_matches_the_first_loadout(
+    dataset, karatepummel_loadouts
+):
+    """The sweep baseline is the cluster's #1 (rank-ordered) real
+    loadout — a coherent build, not a per-node-majority mix."""
+    result = cluster_loadouts(
+        karatepummel_loadouts, dataset, spec_id=KARATEPUMMEL_SPEC, threshold=0.95
+    )
+    cluster = result.clusters[0]
+    base = top_ranked_baseline(cluster)
+    assert base, "top-ranked baseline should have talent picks"
+    expected = {
+        s.entry_id: s.rank
+        for s in cluster.loadouts[0].selections
+        if not s.is_granted and s.rank > 0
+    }
+    assert base == expected
+
+
 def test_enumerate_choice_flips_are_clean_swaps(dataset, karatepummel_loadouts):
     result = cluster_loadouts(
         karatepummel_loadouts, dataset, spec_id=KARATEPUMMEL_SPEC, threshold=0.95
     )
     cluster = result.clusters[0]
-    base = consensus_baseline(cluster)
-    flips = enumerate_choice_flips(base, cluster, dataset)
+    base = top_ranked_baseline(cluster)
+    flips = enumerate_choice_flips(base, dataset)
     assert flips, "Windwalker has choice nodes — expected some flips"
     for f in flips:
         # baseline holds the 'remove' entry, not the 'add' entry
@@ -240,8 +263,8 @@ def test_combine_flip_variants_respects_cap(dataset, karatepummel_loadouts):
         karatepummel_loadouts, dataset, spec_id=KARATEPUMMEL_SPEC, threshold=0.95
     )
     cluster = result.clusters[0]
-    base = consensus_baseline(cluster)
-    flips = enumerate_choice_flips(base, cluster, dataset)
+    base = top_ranked_baseline(cluster)
+    flips = enumerate_choice_flips(base, dataset)
     for cap in (1, 4, 16, 64):
         variants = combine_flip_variants(base, flips, max_builds=cap)
         assert 1 <= len(variants) <= cap, f"cap={cap}: got {len(variants)}"
@@ -256,6 +279,32 @@ def test_combine_empty_flips_returns_just_baseline(dataset, karatepummel_loadout
     )
     base = consensus_baseline(result.clusters[0])
     assert combine_flip_variants(base, [], max_builds=64) == [base]
+
+
+def test_distinct_builds_dedups(dataset, karatepummel_loadouts):
+    """Duplicate loadouts collapse to one; distinct ones survive."""
+    doubled = karatepummel_loadouts + karatepummel_loadouts
+    distinct = distinct_builds(doubled)
+    assert len(distinct) == len(karatepummel_loadouts)
+
+
+def test_loadout_variant_extracts_picks(dataset, karatepummel_loadouts):
+    """loadout_variant yields the non-granted {entry_id: rank} picks."""
+    ld = karatepummel_loadouts[0]
+    variant = loadout_variant(ld)
+    assert variant
+    assert all(rank > 0 for rank in variant.values())
+    assert variant == {
+        s.entry_id: s.rank
+        for s in ld.selections
+        if not s.is_granted and s.rank > 0
+    }
+
+
+def test_hero_sub_tree_identifies_the_tree(dataset, karatepummel_loadouts):
+    """Every Windwalker corpus loadout resolves to hero sub_tree 65."""
+    for ld in karatepummel_loadouts:
+        assert hero_sub_tree(ld) == 65
 
 
 # ---------------------------------------------------------------------------
