@@ -321,17 +321,20 @@ def decoded_from_talent_tree(
     spec_id: int,
     dataset: TraitDataset,
 ) -> DecodedLoadout:
-    """Build a :class:`DecodedLoadout` from WCL's legacy ``talentTree`` shape.
+    """Build a :class:`DecodedLoadout` from WCL's structured talent shapes.
 
-    WCL's ``combatantInfo`` serves talents in one of two forms: a base64
-    ``talentLoadout`` code (handled by :func:`decode_loadout`) or — for
-    a lot of logs — a structured ``talentTree`` list of
-    ``{"id": entry_id, "rank": rank, "nodeID": node_id}`` dicts.
+    WCL serves talents in three forms — :func:`decode_loadout` handles
+    the base64 ``talentLoadout`` code; this function handles the two
+    structured (list-of-dicts) shapes, which differ only in key names:
 
-    ``id`` is the TraitNodeEntry.ID (our ``entry_id``); the rest of the
-    entry metadata (tree, node, sub-tree, name) is resolved from the
-    trait dataset. ``spec_id`` must be supplied by the caller — the
-    structured form, unlike the base64 code, doesn't carry it.
+    * ``combatantInfo.talentTree`` → ``{"id", "rank", "nodeID"}``
+    * ``characterRankings`` entries → ``{"talentID", "points"}``
+
+    In both, the entry-id field (``id`` / ``talentID``) is the
+    TraitNodeEntry.ID; the rest of the metadata (tree, node, sub-tree,
+    name) is resolved from the trait dataset. ``nodeID``, when present,
+    is ignored — the dataset is authoritative. ``spec_id`` must be
+    supplied by the caller — the structured forms don't carry it.
 
     Unknown entry-ids (dataset/build skew) are skipped with an INFO log
     rather than raising, so one stale row doesn't sink a whole cluster.
@@ -340,10 +343,14 @@ def decoded_from_talent_tree(
     for item in talent_tree:
         if not isinstance(item, dict):
             continue
+        # Accept both key conventions: id/rank (combatantInfo) and
+        # talentID/points (characterRankings).
+        raw_id = item.get("id", item.get("talentID"))
+        raw_rank = item.get("rank", item.get("points", 1))
         try:
-            entry_id = int(item["id"])
-            rank = int(item.get("rank", 1))
-        except (KeyError, TypeError, ValueError):
+            entry_id = int(raw_id)
+            rank = int(raw_rank)
+        except (TypeError, ValueError):
             continue
         if rank <= 0:
             continue

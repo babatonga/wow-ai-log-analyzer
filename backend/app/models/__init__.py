@@ -7,6 +7,7 @@ from app.models.class_spec import GameClass, GameSpec, Role
 from app.models.report import Report, ReportFight, ReportPlayer, ReportPlayerCast, ReportPlayerGear
 from app.models.top_log import TopLog
 from app.models.top_logs_seed_job import TopLogsSeedJob
+from app.models.talent_ranking_snapshot import TalentRankingSnapshot
 from app.models.analysis import Analysis, AnalysisStatus
 from app.models.simulation import (
     Simulation,
@@ -36,6 +37,7 @@ __all__ = [
     "SimulationRun",
     "SimulationRunStatus",
     "SimulationStatus",
+    "TalentRankingSnapshot",
     "TopLog",
     "TopLogsSeedJob",
     "User",

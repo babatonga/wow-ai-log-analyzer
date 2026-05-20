@@ -1,54 +1,56 @@
-"""Talent-finder orchestrator: TopLog → MaterializedBuild list.
+"""Talent-finder orchestrator: WCL rankings → MaterializedBuild list.
 
 This service stitches together the pieces:
 
-  TopLog rows (cached)
-        ↓ extract talents_loadout
-  Blizzard base64 codes
-        ↓ decode_loadout
-  list[DecodedLoadout]
-        ↓ cluster_loadouts (consensus / contested / minority)
+  WCL characterRankings (1 page = 100 entries, talents inline)
+        ↓ decoded_from_talent_tree
+  list[DecodedLoadout]  (rank-ordered, best DPS first)
+        ↓ cluster_loadouts (hero-tree split + consensus/contested)
   ClusterResult
         ↓ generate_build_variants (Cartesian over contested)
   list[variant: dict[entry_id, rank]]
         ↓ materialize_variants (round-trip via encode/decode)
   list[MaterializedBuild]    ← what the simc worker consumes
 
+We fetch ``characterRankings`` *directly* rather than reading the cached
+``TopLog`` table: one query returns 100 ranked players with their
+talents inline, which is enough to cover every hero-tree a spec uses —
+including a minority tree that the plain top-15 would miss entirely.
+That minority-coverage matters because the *one-button* optimum can sit
+on a hero-tree the manual-play meta doesn't favour.
+
 The "auto threshold raise" behaviour: if the user's chosen threshold
 produces a variants explosion (raised by ``generate_build_variants``),
-we step the threshold up and retry until the build count fits. This is
-the same intuition the user expressed during scope discussion — if too
-many slots look contested at the strict threshold, demand stronger
-consensus until the search space is manageable.
+we step the threshold up and retry until the build count fits.
 """
 from __future__ import annotations
 
 import logging
 import re
 from dataclasses import dataclass
-from typing import Iterable
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AppSetting, GameSpec, TopLog
-from app.schemas.talent_finder import EncounterMap, EncounterMapEntry
+from app.models import AppSetting, GameSpec, TalentRankingSnapshot
+from app.schemas.talent_finder import EncounterMap
 from app.services.talents import (
     DecodedLoadout,
     TraitDataset,
-    decode_loadout,
     get_dataset,
 )
-from app.services.talents.decoder import TalentDecodeError, decoded_from_talent_tree
+from app.services.talents.decoder import decoded_from_talent_tree
 from app.services.talents.finder import (
-    BuildExplosionError,
     ClusterResult,
     MaterializedBuild,
     cluster_loadouts,
     generate_build_variants,
     materialize_variants,
 )
+from app.services.wcl.client import WclClient
+from app.services.wcl.queries import ENCOUNTER_RANKING_TALENTS
 
 logger = logging.getLogger(__name__)
 
@@ -183,17 +185,16 @@ async def resolve_game_spec(
     return row
 
 
-# Threshold ladder used when the first attempt explodes. Strict-er
-# values demand stronger consensus among top performers; 0.95 means
-# "near unanimous" and produces the smallest variant set.
-_THRESHOLD_LADDER = (0.30, 0.50, 0.67, 0.80, 0.95)
-
 DEFAULT_TOP_N = 15
-"""How many ranking rows to pull when the caller doesn't override."""
+"""How many ranked loadouts to keep *per hero tree* before clustering."""
 
 DEFAULT_MAX_BUILDS = 256
 """Hard cap on variants per run. ~256 builds × 1000 iter × 32 cores ≈
 several minutes on the user's DL380."""
+
+RANKING_SNAPSHOT_TTL_DAYS = 7
+"""How long a cached WCL rankings snapshot stays fresh. Past this we
+refetch — matches the weekly cadence of the other WCL caches."""
 
 
 @dataclass
@@ -203,10 +204,11 @@ class TalentFinderRun:
     spec: GameSpec
     encounter_id: int
     n_logs_considered: int
-    """How many TopLog rows we pulled before filtering."""
+    """How many ranking entries (with usable talents) we pulled."""
 
     n_logs_used: int
-    """How many had a usable base64 loadout."""
+    """How many loadouts actually went into clusters (after the
+    per-hero-tree top-N cap)."""
 
     threshold_used: float
     """Final threshold after the auto-raise ladder finished."""
@@ -218,8 +220,117 @@ class TalentFinderRun:
     """Ready-to-sim variants — what gets fed to the simc worker."""
 
     diagnostics: list[str]
-    """Human-readable notes — e.g. "raised threshold to 0.50 after
-    explosion at 0.30"; surfaced to the UI under the result list."""
+    """Human-readable notes — threshold raises, cache hits, etc.;
+    surfaced to the UI under the result list."""
+
+
+# ---------------------------------------------------------------------------
+# WCL rankings fetch + snapshot cache
+# ---------------------------------------------------------------------------
+
+
+def _wcl_class_name(class_slug: str) -> str:
+    """``death_knight`` → ``DeathKnight`` (WCL's className slug)."""
+    return "".join(word.capitalize() for word in class_slug.split("_"))
+
+
+def _wcl_spec_name(name_en: str) -> str:
+    """``Unholy`` → ``Unholy`` (WCL's specName slug)."""
+    return "".join(word.capitalize() for word in name_en.split())
+
+
+async def _wcl_fetch_rankings(
+    spec: GameSpec, encounter_id: int, wcl_client: WclClient | None
+) -> list[dict]:
+    """Fetch one page (100) of characterRankings with inline talents.
+
+    Returns a rank-ordered list of
+    ``{"rank": int, "amount": float, "talents": [...]}`` — entries with
+    no talent data (private logs) are dropped.
+    """
+    variables = {
+        "encounterID": encounter_id,
+        "className": _wcl_class_name(spec.class_slug),
+        "specName": _wcl_spec_name(spec.name_en),
+        "metric": "dps",
+        "page": 1,
+    }
+    if wcl_client is not None:
+        payload = await wcl_client.query(ENCOUNTER_RANKING_TALENTS, variables)
+    else:
+        async with WclClient() as client:
+            payload = await client.query(ENCOUNTER_RANKING_TALENTS, variables)
+
+    enc = (payload.get("worldData") or {}).get("encounter") or {}
+    cr = enc.get("characterRankings") or {}
+    raw = cr.get("rankings") or []
+    out: list[dict] = []
+    for i, r in enumerate(raw):
+        talents = r.get("talents")
+        if not talents or not isinstance(talents, list):
+            continue  # private log / no combatant info
+        out.append(
+            {"rank": i + 1, "amount": r.get("amount", 0), "talents": talents}
+        )
+    return out
+
+
+async def _get_ranking_snapshot(
+    session: AsyncSession,
+    spec: GameSpec,
+    encounter_id: int,
+    *,
+    force_refresh: bool,
+    wcl_client: WclClient | None,
+) -> tuple[list[dict], list[str]]:
+    """Return ``(rankings, diagnostics)`` — cached if a fresh snapshot
+    exists, freshly fetched (and snapshotted) otherwise.
+
+    If WCL is unreachable but a stale snapshot exists we fall back to it
+    rather than failing the whole run.
+    """
+    snap = await session.get(TalentRankingSnapshot, (spec.slug, encounter_id))
+    now = datetime.now(UTC)
+    fresh = (
+        snap is not None
+        and snap.fetched_at is not None
+        and (now - snap.fetched_at) < timedelta(days=RANKING_SNAPSHOT_TTL_DAYS)
+    )
+    if snap is not None and fresh and not force_refresh:
+        age_d = (now - snap.fetched_at).days
+        return list(snap.rankings or []), [
+            f"using cached WCL rankings ({age_d}d old)"
+        ]
+
+    try:
+        rankings = await _wcl_fetch_rankings(spec, encounter_id, wcl_client)
+    except Exception as exc:  # noqa: BLE001
+        if snap is not None:
+            logger.warning(
+                "talent-finder: WCL fetch failed, using stale snapshot: %s", exc
+            )
+            return list(snap.rankings or []), [
+                f"WCL fetch failed ({exc.__class__.__name__}); "
+                f"using stale snapshot from {snap.fetched_at:%Y-%m-%d}"
+            ]
+        raise
+
+    # Upsert the snapshot (commits with the caller's transaction).
+    stmt = pg_insert(TalentRankingSnapshot).values(
+        spec_slug=spec.slug,
+        encounter_id=encounter_id,
+        fetched_at=now,
+        rankings=rankings,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            TalentRankingSnapshot.spec_slug,
+            TalentRankingSnapshot.encounter_id,
+        ],
+        set_={"fetched_at": stmt.excluded.fetched_at, "rankings": stmt.excluded.rankings},
+    )
+    await session.execute(stmt)
+    return rankings, []
 
 
 # ---------------------------------------------------------------------------
@@ -232,34 +343,41 @@ async def build_variants_for_spec_encounter(
     *,
     spec: GameSpec,
     encounter_id: int,
-    metric: str = "dps",
     top_n: int = DEFAULT_TOP_N,
     initial_threshold: float = 0.30,
     max_builds: int = DEFAULT_MAX_BUILDS,
     dataset: TraitDataset | None = None,
+    wcl_client: WclClient | None = None,
+    force_refresh: bool = False,
 ) -> TalentFinderRun:
-    """End-to-end: pick up cached TopLogs and produce a variant batch.
+    """End-to-end: WCL rankings → clustered → materialized variant batch.
 
-    Assumes the top-logs table is already populated for this (spec,
-    encounter, metric) by the periodic refresh. Returns even if zero
-    builds were produced (``builds == []``) so the caller can surface
-    the diagnostic.
+    Fetches (or reuses a cached snapshot of) the encounter's top-100
+    ``characterRankings``, decodes their inline talents, clusters by
+    hero tree, and Cartesian-expands the contested slots. Every hero
+    tree the meta uses is covered — including minority trees that the
+    one-button optimum may actually favour.
+
+    Returns even if zero builds were produced (``builds == []``) so the
+    caller can surface the diagnostics.
     """
     if dataset is None:
         dataset = get_dataset()
 
-    rows = await _load_top_logs(
-        session, spec_slug=spec.slug, encounter_id=encounter_id,
-        metric=metric, limit=top_n,
+    rankings, diagnostics = await _get_ranking_snapshot(
+        session, spec, encounter_id,
+        force_refresh=force_refresh, wcl_client=wcl_client,
     )
-    n_considered = len(rows)
 
-    decoded, decode_diagnostics = _decode_all(
-        rows, dataset, spec_id=spec.wcl_spec_id
-    )
-    n_used = len(decoded)
-
-    diagnostics: list[str] = list(decode_diagnostics)
+    # Decode every ranking entry's talents (rank order preserved).
+    decoded: list[DecodedLoadout] = []
+    for entry in rankings:
+        ld = decoded_from_talent_tree(
+            entry.get("talents") or [], spec_id=spec.wcl_spec_id, dataset=dataset
+        )
+        if ld.selections:
+            decoded.append(ld)
+    n_considered = len(rankings)
 
     if not decoded:
         return TalentFinderRun(
@@ -274,162 +392,38 @@ async def build_variants_for_spec_encounter(
                 hero_tree_distribution={},
             ),
             builds=[],
-            diagnostics=diagnostics + ["no decodable loadouts in top logs"],
+            diagnostics=diagnostics + ["no usable talent data in WCL rankings"],
         )
 
-    # Use the first decoded loadout to pin the Blizzard spec_id. This
-    # protects against a stale ``wcl_spec_id`` value if WCLs and
-    # Blizzards id schemes ever diverge on a new spec.
-    blizzard_spec_id = decoded[0].spec_id
-    if blizzard_spec_id != spec.wcl_spec_id:
-        diagnostics.append(
-            f"warning: WCL spec_id={spec.wcl_spec_id} differs from "
-            f"loadout-encoded {blizzard_spec_id}; trusting the loadout"
-        )
+    blizzard_spec_id = spec.wcl_spec_id
 
-    # Auto-raise threshold until the variant count fits under max_builds.
-    cluster: ClusterResult | None = None
-    builds: list[MaterializedBuild] = []
-    chosen_thresh = initial_threshold
-    ladder = [t for t in _THRESHOLD_LADDER if t >= initial_threshold]
-    if initial_threshold not in ladder:
-        ladder = [initial_threshold] + ladder
-
-    for thresh in ladder:
-        cluster = cluster_loadouts(
-            decoded, dataset, spec_id=blizzard_spec_id, threshold=thresh,
-        )
-        try:
-            variants = generate_build_variants(cluster, dataset, max_builds=max_builds)
-        except BuildExplosionError as exc:
-            diagnostics.append(
-                f"threshold {thresh:g} produced too many variants — "
-                f"trying a stricter consensus ({exc.args[0] if exc.args else ''})"
-            )
-            continue
-        builds = materialize_variants(variants, dataset, spec_id=blizzard_spec_id)
-        chosen_thresh = thresh
-        break
-    else:
-        # All thresholds exploded — should be impossible since 0.95
-        # demands near-unanimity, but handle gracefully.
-        diagnostics.append(
-            "every threshold up to 0.95 produced too many variants — "
-            "your top-N is too small or too divergent; aborting"
-        )
-        cluster = cluster_loadouts(
-            decoded, dataset, spec_id=blizzard_spec_id, threshold=0.95,
-        )
-
-    assert cluster is not None  # for type narrowing
-
-    if chosen_thresh != initial_threshold:
-        diagnostics.append(
-            f"final threshold: {chosen_thresh:g} (raised from {initial_threshold:g})"
-        )
+    # Cluster + expand. ``generate_build_variants`` greedily fits the
+    # contested-node expansion within ``max_builds`` (most-split nodes
+    # first), so no threshold auto-raise is needed — the threshold just
+    # defines which nodes count as contested in the first place.
+    cluster = cluster_loadouts(
+        decoded, dataset, spec_id=blizzard_spec_id,
+        threshold=initial_threshold, max_per_hero_tree=top_n,
+    )
+    variants = generate_build_variants(cluster, dataset, max_builds=max_builds)
+    builds = materialize_variants(variants, dataset, spec_id=blizzard_spec_id)
 
     return TalentFinderRun(
         spec=spec,
         encounter_id=encounter_id,
         n_logs_considered=n_considered,
-        n_logs_used=n_used,
-        threshold_used=chosen_thresh,
+        n_logs_used=sum(c.n_loadouts() for c in cluster.clusters),
+        threshold_used=initial_threshold,
         cluster=cluster,
         builds=builds,
         diagnostics=diagnostics,
     )
 
 
-# ---------------------------------------------------------------------------
-# Internals
-# ---------------------------------------------------------------------------
-
-
-async def _load_top_logs(
-    session: AsyncSession,
-    *,
-    spec_slug: str,
-    encounter_id: int,
-    metric: str,
-    limit: int,
-) -> list[TopLog]:
-    """Return TopLog rows for (spec, encounter, metric), best ranks first."""
-    stmt = (
-        select(TopLog)
-        .where(
-            TopLog.spec_slug == spec_slug,
-            TopLog.encounter_id == encounter_id,
-            TopLog.metric == metric,
-        )
-        .order_by(TopLog.rank.asc())
-        .limit(limit)
-    )
-    rows = (await session.execute(stmt)).scalars().all()
-    return list(rows)
-
-
-def _decode_all(
-    rows: Iterable[TopLog],
-    dataset: TraitDataset,
-    *,
-    spec_id: int,
-) -> tuple[list[DecodedLoadout], list[str]]:
-    """Decode every TopLog's stored talents into a DecodedLoadout.
-
-    WCL stores talents in ``TopLog.detail_payload['talents_loadout']`` in
-    one of two shapes:
-
-    * a base64 Blizzard loadout *string* → :func:`decode_loadout`
-    * a structured ``talentTree`` *list* of ``{id, rank, nodeID}`` dicts
-      → :func:`decoded_from_talent_tree` (needs ``spec_id`` since the
-      structured form doesn't carry it)
-
-    Skips rows with no talent data or an unparseable code, collecting a
-    per-skip diagnostic so the UI can explain a short cluster.
-    """
-    decoded: list[DecodedLoadout] = []
-    diag: list[str] = []
-    for r in rows:
-        detail = r.detail_payload or {}
-        loadout = detail.get("talents_loadout") if isinstance(detail, dict) else None
-        if not loadout:
-            diag.append(
-                f"rank {r.rank} ({r.character_name}): no talent loadout in detail"
-            )
-            continue
-        try:
-            if isinstance(loadout, str):
-                decoded.append(decode_loadout(loadout, dataset=dataset))
-            elif isinstance(loadout, list):
-                ld = decoded_from_talent_tree(
-                    loadout, spec_id=spec_id, dataset=dataset
-                )
-                if not ld.selections:
-                    diag.append(
-                        f"rank {r.rank} ({r.character_name}): talentTree "
-                        "resolved to zero known entries"
-                    )
-                    continue
-                decoded.append(ld)
-            else:
-                diag.append(
-                    f"rank {r.rank} ({r.character_name}): unexpected "
-                    f"talents_loadout type {type(loadout).__name__}"
-                )
-        except TalentDecodeError as exc:
-            diag.append(
-                f"rank {r.rank} ({r.character_name}): decode failed — {exc}"
-            )
-            logger.warning(
-                "talent-finder: decode failed for top_log id=%s rank=%s: %s",
-                r.id, r.rank, exc,
-            )
-    return decoded, diag
-
-
 __all__ = [
     "DEFAULT_MAX_BUILDS",
     "DEFAULT_TOP_N",
+    "RANKING_SNAPSHOT_TTL_DAYS",
     "TalentFinderRun",
     "build_variants_for_spec_encounter",
 ]

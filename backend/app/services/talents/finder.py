@@ -108,6 +108,16 @@ class NodePicks:
     def pick_ratio(self, bundle: PickBundle) -> float:
         return self.counts[bundle] / self.n_total if self.n_total else 0.0
 
+    @property
+    def contest_strength(self) -> int:
+        """How genuinely split this node is — the support count of the
+        *runner-up* bundle. A node where the 2nd pick has 7/15 backing
+        is more worth exploring than one where it has 5/15. Zero for
+        consensus/minority nodes (only relevant for contested ones)."""
+        if len(self.contested_picks) < 2:
+            return 0
+        return self.counts[self.contested_picks[1]]
+
 
 @dataclass
 class HeroTreeCluster:
@@ -165,22 +175,29 @@ def cluster_loadouts(
     *,
     spec_id: int,
     threshold: float = 0.30,
+    max_per_hero_tree: int | None = None,
 ) -> ClusterResult:
     """Group loadouts by hero tree and classify every node's picks.
 
     Parameters
     ----------
     loadouts:
-        Decoded loadouts from the WCL top-N. Loadouts for a different
-        spec are silently dropped (logged at INFO).
+        Decoded loadouts, **rank-ordered** (best DPS first). Loadouts
+        for a different spec are silently dropped (logged at INFO).
     dataset:
         Trait dataset used to look up node metadata (name, type).
     spec_id:
         The target spec. Loadouts must match.
     threshold:
-        A pick (or hero tree) is "contested" iff at least
-        ``threshold * n_total`` loadouts disagree with the majority on
-        that slot. ``0.30`` ≙ "user's 5-of-15" rule.
+        Per-node consensus threshold *within* a hero-tree cluster: a
+        pick is "supported" iff at least ``ceil(threshold * n)``
+        loadouts in the cluster agree on it. ``0.30`` ≙ "5-of-15".
+    max_per_hero_tree:
+        Keep at most this many loadouts per hero tree (the top ones,
+        since input is rank-ordered). ``None`` = no cap. Every hero
+        tree the meta uses becomes its own cluster regardless of how
+        small — a one-button optimum can live on a minority tree, so
+        we never drop a tree by popularity.
 
     Returns
     -------
@@ -223,46 +240,19 @@ def cluster_loadouts(
         hero_dist[sub] += 1
         by_tree[sub].append(ld)
 
-    # 3. Apply the cluster threshold: a tree must hold at least
-    #    ``ceil(threshold * total)`` loadouts to be worth expanding. We
-    #    use ceil so a 30%-threshold over 4 loadouts demands 2 (50%),
-    #    not 1 (25%) — matches the user's "5 of 15" intuition.
-    #    Special case: if the threshold rounds us out of every cluster,
-    #    we keep the single biggest tree anyway so the run isn't empty.
-    min_cluster_size = max(1, math.ceil(threshold * len(relevant)))
+    # 3. Build one cluster per hero tree. Every tree the meta uses is
+    #    kept — we never drop a tree by popularity, because the
+    #    one-button optimum can sit on a minority hero tree the
+    #    manual-play meta doesn't favour. Each tree is capped to its
+    #    top ``max_per_hero_tree`` loadouts (input is rank-ordered).
     clusters: list[HeroTreeCluster] = []
-    dropped: dict[int, int] = {}
     for sub, lds in by_tree.items():
-        if len(lds) < min_cluster_size:
-            dropped[sub] = len(lds)
-            logger.info(
-                "talent-finder: drop hero-tree %s with %d loadouts (< %d threshold)",
-                sub, len(lds), min_cluster_size,
-            )
-            continue
+        capped = lds[:max_per_hero_tree] if max_per_hero_tree else lds
         clusters.append(
             HeroTreeCluster(
                 sub_tree_id=sub,
                 sub_tree_name=_sub_tree_name(dataset, sub),
-                loadouts=lds,
-            )
-        )
-
-    # Fallback: if the threshold eliminated everything, salvage the
-    # biggest tree so the user still gets *something* to sim.
-    if not clusters and by_tree:
-        biggest_sub, biggest_lds = max(by_tree.items(), key=lambda kv: len(kv[1]))
-        dropped.pop(biggest_sub, None)
-        logger.warning(
-            "talent-finder: every hero-tree below threshold; keeping the "
-            "largest (%s, %d loadouts) as fallback",
-            biggest_sub, len(biggest_lds),
-        )
-        clusters.append(
-            HeroTreeCluster(
-                sub_tree_id=biggest_sub,
-                sub_tree_name=_sub_tree_name(dataset, biggest_sub),
-                loadouts=biggest_lds,
+                loadouts=capped,
             )
         )
 
@@ -277,7 +267,7 @@ def cluster_loadouts(
         n_loadouts_used=sum(c.n_loadouts() for c in clusters),
         hero_tree_distribution=dict(hero_dist),
         clusters=clusters,
-        dropped_hero_trees=dropped,
+        dropped_hero_trees={},
     )
 
 
@@ -287,29 +277,40 @@ def generate_build_variants(
     *,
     max_builds: int = 1024,
 ) -> list[dict[int, int]]:
-    """Cartesian-product every contested node across all hero clusters.
+    """Expand the contested nodes into ready-to-sim variant dicts.
 
-    Each generated variant is returned as a ``{entry_id: rank}`` dict
-    ready for :func:`encode_loadout`. Consensus picks are baked in.
+    Each generated variant is a ``{entry_id: rank}`` dict ready for
+    :func:`encode_loadout`. Consensus picks are baked in.
 
-    ``max_builds`` is a hard cap to keep the simc batch reasonable; if
-    the Cartesian product would exceed it we abort and let the caller
-    decide what to do (raise threshold, skip the spec, etc.).
+    A fully Cartesian expansion of every contested node would blow up
+    exponentially (2^N for N contested choice nodes). Instead, within
+    each hero-tree cluster we expand only the *most contested* nodes —
+    sorted by how strongly the runner-up pick is backed — and freeze
+    the rest at their majority pick, stopping once the build budget for
+    that cluster is used up. The genuinely-split slots get explored;
+    the near-unanimous ones don't waste sim time.
+
+    ``max_builds`` is the total budget, split evenly across the hero
+    clusters. The result is always ``<= max_builds``.
     """
+    clusters = cluster.clusters or []
+    if not clusters:
+        return []
     variants: list[dict[int, int]] = []
-    for hc in cluster.clusters:
-        variants.extend(_cluster_variants(hc, dataset))
-        if len(variants) > max_builds:
-            raise BuildExplosionError(
-                f"Talent-finder would generate >{max_builds} builds "
-                f"(threshold={cluster.threshold:g}). Raise the threshold "
-                f"or restrict scope."
-            )
+    remaining_budget = max_builds
+    remaining_clusters = len(clusters)
+    for hc in clusters:
+        per_cluster = max(1, remaining_budget // remaining_clusters)
+        cv = _cluster_variants(hc, dataset, budget=per_cluster)
+        variants.extend(cv)
+        remaining_budget -= len(cv)
+        remaining_clusters -= 1
     return variants
 
 
 class BuildExplosionError(RuntimeError):
-    """Raised when contested-node expansion blows past max_builds."""
+    """Kept for API back-compat. No longer raised — :func:`generate_build_variants`
+    greedily fits within the budget instead of aborting."""
 
 
 @dataclass(frozen=True)
@@ -475,15 +476,19 @@ def _classify_cluster(
 def _cluster_variants(
     cluster: HeroTreeCluster,
     dataset: TraitDataset,
+    *,
+    budget: int,
 ) -> list[dict[int, int]]:
-    """One Cartesian product per hero-tree cluster.
+    """Expand one hero-tree cluster into at most ``budget`` variants.
 
-    Each axis is a *node*; its values are the bundles at that node that
-    crossed the support threshold. A variant is a flat
-    ``{entry_id: rank}`` dict ready for :func:`encode_loadout`.
+    Consensus picks are baked into every variant. Contested nodes are
+    sorted by :attr:`NodePicks.contest_strength` (most genuinely-split
+    first); we Cartesian-expand them greedily while the running product
+    stays within ``budget``, and freeze the rest at their majority
+    pick. A variant is a flat ``{entry_id: rank}`` dict.
     """
     base: dict[int, int] = {}
-    contested_axes: list[list[PickBundle]] = []
+    contested: list[NodePicks] = []
 
     for np_ in cluster.nodes.values():
         if np_.classification == "consensus":
@@ -491,14 +496,31 @@ def _cluster_variants(
             for entry_id, rank in np_.consensus_pick:
                 base[entry_id] = rank
         elif np_.classification == "contested":
-            contested_axes.append(np_.contested_picks)
+            contested.append(np_)
         # minority_only: drop the node — meta doesn't support it
 
-    if not contested_axes:
+    # Most genuinely-contested first; ties broken by node_id for
+    # determinism.
+    contested.sort(key=lambda n: (-n.contest_strength, n.node_id))
+
+    axes: list[list[PickBundle]] = []
+    product_size = 1
+    for np_ in contested:
+        n_picks = len(np_.contested_picks)
+        if n_picks > 1 and product_size * n_picks <= budget:
+            axes.append(np_.contested_picks)
+            product_size *= n_picks
+        else:
+            # No budget left for this axis — freeze at the majority pick
+            # (contested_picks[0] is the most-supported bundle).
+            for entry_id, rank in np_.contested_picks[0]:
+                base[entry_id] = rank
+
+    if not axes:
         return [dict(base)]
 
     variants: list[dict[int, int]] = []
-    for combo in product(*contested_axes):
+    for combo in product(*axes):
         v = dict(base)
         for bundle in combo:
             for entry_id, rank in bundle:
@@ -508,6 +530,8 @@ def _cluster_variants(
 
 
 def _cluster_variant_count(cluster: HeroTreeCluster) -> int:
+    """Upper-bound variant count if every contested node were expanded
+    (used by the CLI report — the real generator caps this)."""
     n = 1
     for np_ in cluster.nodes.values():
         if np_.classification == "contested":

@@ -256,3 +256,37 @@ query EncounterRankings(
   }
 }
 """
+
+
+# Talent-Finder query: one page of ``characterRankings`` with
+# ``includeCombatantInfo`` so every ranking entry carries its ``talents``
+# array inline (the ``{talentID, points}`` structured shape). One page is
+# 100 entries — enough to cover every hero-tree a spec uses, including
+# minority picks the plain top-15 would miss. We don't need gear/casts
+# here, just talents, so this is a far lighter fetch than the AI
+# analyzer's per-log detail crawl.
+ENCOUNTER_RANKING_TALENTS = """
+query EncounterRankingTalents(
+  $encounterID: Int!,
+  $className: String!,
+  $specName: String!,
+  $metric: CharacterRankingMetricType!,
+  $page: Int!,
+  $difficulty: Int
+) {
+  worldData {
+    encounter(id: $encounterID) {
+      id
+      name
+      characterRankings(
+        className: $className,
+        specName: $specName,
+        metric: $metric,
+        page: $page,
+        difficulty: $difficulty,
+        includeCombatantInfo: true
+      )
+    }
+  }
+}
+"""

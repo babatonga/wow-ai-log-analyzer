@@ -19,7 +19,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.errors import ValidationAppError
-from app.db import async_session_factory
 from app.deps import ArqDep, CurrentUser, SessionDep
 from app.models import (
     Simulation,
@@ -27,14 +26,9 @@ from app.models import (
     SimulationRunStatus,
     SimulationStatus,
 )
-from app.schemas.simulation import (
-    PRECISION_ITERATIONS,
-    LoadoutIn,
-    SimulationOut,
-)
+from app.schemas.simulation import PRECISION_ITERATIONS, SimulationOut
 from app.schemas.talent_finder import EncounterMap, TalentFinderRunIn
-from app.services import talent_finder_service, top_logs_service
-from app.services.wcl.client import WclClient
+from app.services import talent_finder_service
 
 logger = logging.getLogger(__name__)
 
@@ -101,51 +95,26 @@ async def run_talent_finder(
             f"under Admin → Talent-Finder."
         )
 
-    # 3. On-demand top-logs refresh if the bucket is empty.
-    cached = await talent_finder_service._load_top_logs(
-        session,
-        spec_slug=spec.slug,
-        encounter_id=entry.encounter_id,
-        metric="dps",
-        limit=1,
-    )
-    if not cached:
-        logger.info(
-            "talent-finder: TopLogs empty for spec=%s encounter=%s; "
-            "fetching on demand (this may take ~30s)",
-            spec.slug, entry.encounter_id,
+    # 3. Build the variant set. The service fetches WCL characterRankings
+    #    itself (or reuses a cached snapshot), so there's no separate
+    #    top-logs refresh step. A WCL/encounter error surfaces as a 422.
+    try:
+        run = await talent_finder_service.build_variants_for_spec_encounter(
+            session,
+            spec=spec,
+            encounter_id=entry.encounter_id,
+            top_n=payload.top_n,
+            initial_threshold=payload.threshold,
+            max_builds=payload.max_builds,
         )
-        try:
-            async with async_session_factory() as seed_session:
-                async with seed_session.begin():
-                    async with WclClient() as wcl:
-                        await top_logs_service.refresh_top_logs_for_spec_encounter(
-                            seed_session,
-                            spec=spec,
-                            encounter_id=entry.encounter_id,
-                            encounter_name=entry.encounter_name or None,
-                            metric="dps",
-                            is_raid=entry.is_raid,
-                            wcl_client=wcl,
-                        )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("talent-finder: on-demand top-logs fetch failed")
-            raise ValidationAppError(
-                f"Couldn't fetch top logs for {entry.encounter_name or entry.encounter_id} "
-                f"({exc.__class__.__name__}). The encounter ID may be wrong, "
-                f"or WCL is unreachable. Try again in a few minutes."
-            ) from exc
-
-    # 4. Build the variant set.
-    run = await talent_finder_service.build_variants_for_spec_encounter(
-        session,
-        spec=spec,
-        encounter_id=entry.encounter_id,
-        metric="dps",
-        top_n=payload.top_n,
-        initial_threshold=payload.threshold,
-        max_builds=payload.max_builds,
-    )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("talent-finder: variant build failed")
+        raise ValidationAppError(
+            f"Couldn't build variants for "
+            f"{entry.encounter_name or entry.encounter_id} "
+            f"({exc.__class__.__name__}). The encounter ID may be wrong, "
+            f"or WCL is unreachable. Try again in a few minutes."
+        ) from exc
 
     if not run.builds:
         raise ValidationAppError(

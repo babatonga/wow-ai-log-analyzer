@@ -12,7 +12,6 @@ import pytest
 
 from app.services.talents import decode_loadout, get_dataset
 from app.services.talents.finder import (
-    BuildExplosionError,
     cluster_loadouts,
     generate_build_variants,
     materialize_variants,
@@ -56,15 +55,27 @@ def karatepummel_loadouts(dataset):
 # ---------------------------------------------------------------------------
 
 
-def test_minority_hero_tree_dropped_at_default_threshold(dataset, deadfox_loadouts):
-    """1-of-4 Sanlayn is 25% < 30% threshold → dropped; Rider kept."""
+def test_all_hero_trees_become_clusters(dataset, deadfox_loadouts):
+    """Every hero tree the meta uses becomes a cluster — even a 1-of-4
+    minority tree. A one-button optimum can live on a minority tree, so
+    we never drop one by popularity."""
     result = cluster_loadouts(
         deadfox_loadouts, dataset, spec_id=DEADFOX_SPEC, threshold=0.30
     )
     assert result.hero_tree_distribution == {31: 1, 32: 3}
     kept = {c.sub_tree_id for c in result.clusters}
-    assert kept == {32}, "only the 3-of-4 Rider tree should survive"
-    assert 31 in result.dropped_hero_trees
+    assert kept == {31, 32}, "both Sanlayn and Rider must be clustered"
+    assert result.dropped_hero_trees == {}
+
+
+def test_max_per_hero_tree_caps_cluster_size(dataset, deadfox_loadouts):
+    """``max_per_hero_tree`` keeps only the top-N loadouts per tree."""
+    result = cluster_loadouts(
+        deadfox_loadouts, dataset, spec_id=DEADFOX_SPEC,
+        threshold=0.30, max_per_hero_tree=2,
+    )
+    for c in result.clusters:
+        assert c.n_loadouts() <= 2
 
 
 def test_single_hero_tree_cluster(dataset, karatepummel_loadouts):
@@ -124,16 +135,17 @@ def test_generated_variant_count_matches_cluster(dataset, karatepummel_loadouts)
     assert len(variants) == result.total_variants()
 
 
-def test_build_explosion_raises_over_cap(dataset, deadfox_loadouts):
-    """A loose threshold on the divergent Rider trio explodes well past
-    a tiny cap — generate_build_variants must raise, not silently
-    truncate."""
+def test_greedy_fit_respects_max_builds(dataset, deadfox_loadouts):
+    """A loose threshold on the divergent Rider trio would Cartesian-
+    explode — generate_build_variants must greedily fit within the cap,
+    never exceed it."""
     rider = deadfox_loadouts[1:]
     result = cluster_loadouts(rider, dataset, spec_id=DEADFOX_SPEC, threshold=0.30)
     if result.total_variants() <= 4:
-        pytest.skip("corpus didn't diverge enough to exceed the cap")
-    with pytest.raises(BuildExplosionError):
-        generate_build_variants(result, dataset, max_builds=4)
+        pytest.skip("corpus didn't diverge enough to stress the cap")
+    for cap in (1, 4, 16, 64):
+        variants = generate_build_variants(result, dataset, max_builds=cap)
+        assert 0 < len(variants) <= cap, f"cap={cap}: got {len(variants)}"
 
 
 def test_consensus_pick_present_in_every_variant(dataset, karatepummel_loadouts):
