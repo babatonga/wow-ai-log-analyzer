@@ -45,7 +45,10 @@ from app.services.talents.decoder import decoded_from_talent_tree
 from app.services.talents.finder import (
     ClusterResult,
     MaterializedBuild,
+    apply_flips,
     cluster_loadouts,
+    consensus_baseline,
+    enumerate_choice_flips,
     generate_build_variants,
     materialize_variants,
 )
@@ -420,10 +423,144 @@ async def build_variants_for_spec_encounter(
     )
 
 
+# ---------------------------------------------------------------------------
+# Sensitivity sweep — phase-1 plan (baseline + single choice-flips)
+# ---------------------------------------------------------------------------
+
+
+def sweep_loadout_entry(
+    build: MaterializedBuild,
+    *,
+    role: str,
+    hero_tree: int,
+    spec_id: int,
+    variant: dict[int, int] | None = None,
+    flip: dict | None = None,
+) -> dict:
+    """One ``Simulation.loadouts`` entry, tagged so the sweep worker can
+    correlate a sim back to its role (baseline / sweep / combine), hero
+    tree, and — for baselines — the full build dict / — for flips — the
+    flip delta needed to rebuild combine variants in phase 2.
+
+    JSON-safe: ``variant`` keys are stringified (JSON object keys must
+    be strings)."""
+    entry: dict = {
+        "name": build.label,
+        "talents": build.simc_block,
+        "loadout_code": build.loadout_code,
+        "tf_role": role,
+        "tf_hero_tree": hero_tree,
+        "tf_spec_id": spec_id,
+    }
+    if variant is not None:
+        entry["tf_variant"] = {str(k): v for k, v in variant.items()}
+    if flip is not None:
+        entry["tf_flip"] = flip
+    return entry
+
+
+@dataclass
+class SweepPhase1:
+    """Phase-1 plan for a sensitivity-sweep run."""
+
+    spec: GameSpec
+    encounter_id: int
+    loadouts: list[dict]
+    """``Simulation.loadouts`` entries — one baseline + its choice-flips
+    per hero tree, each tagged via :func:`sweep_loadout_entry`."""
+
+    diagnostics: list[str]
+
+
+async def build_sweep_phase1(
+    session: AsyncSession,
+    *,
+    spec: GameSpec,
+    encounter_id: int,
+    threshold: float = 0.30,
+    dataset: TraitDataset | None = None,
+    wcl_client: WclClient | None = None,
+    force_refresh: bool = False,
+) -> SweepPhase1:
+    """Build the phase-1 loadout set for a sweep run.
+
+    Per hero tree: the meta-consensus baseline build, plus one variant
+    for every single choice-node flip off that baseline. Phase 2 (the
+    worker) sims these, ranks the flips by measured DPS delta, and
+    Cartesian-combines the winners.
+    """
+    if dataset is None:
+        dataset = get_dataset()
+
+    rankings, diagnostics = await _get_ranking_snapshot(
+        session, spec, encounter_id,
+        force_refresh=force_refresh, wcl_client=wcl_client,
+    )
+    decoded: list[DecodedLoadout] = []
+    for entry in rankings:
+        ld = decoded_from_talent_tree(
+            entry.get("talents") or [], spec_id=spec.wcl_spec_id, dataset=dataset
+        )
+        if ld.selections:
+            decoded.append(ld)
+
+    loadouts: list[dict] = []
+    if not decoded:
+        return SweepPhase1(
+            spec=spec, encounter_id=encounter_id, loadouts=[],
+            diagnostics=diagnostics + ["no usable talent data in WCL rankings"],
+        )
+
+    cluster = cluster_loadouts(
+        decoded, dataset, spec_id=spec.wcl_spec_id,
+        threshold=threshold, max_per_hero_tree=DEFAULT_TOP_N,
+    )
+    for hc in cluster.clusters:
+        base_dict = consensus_baseline(hc)
+        if not base_dict:
+            continue
+        flips = enumerate_choice_flips(base_dict, hc, dataset)
+        variants = [base_dict] + [apply_flips(base_dict, [f]) for f in flips]
+        builds = materialize_variants(
+            variants, dataset, spec_id=spec.wcl_spec_id,
+            label_prefix=f"st{hc.sub_tree_id}b",
+        )
+        # builds[0] = baseline, builds[1:] align with flips
+        loadouts.append(
+            sweep_loadout_entry(
+                builds[0], role="baseline", hero_tree=hc.sub_tree_id,
+                spec_id=spec.wcl_spec_id, variant=base_dict,
+            )
+        )
+        for flip, build in zip(flips, builds[1:]):
+            loadouts.append(
+                sweep_loadout_entry(
+                    build, role="sweep", hero_tree=hc.sub_tree_id,
+                    spec_id=spec.wcl_spec_id,
+                    flip={
+                        "node_id": flip.node_id,
+                        "node_name": flip.node_name,
+                        "remove": list(flip.remove),
+                        "add": list(flip.add),
+                    },
+                )
+            )
+
+    if not loadouts:
+        diagnostics.append("no clusters produced a baseline build")
+    return SweepPhase1(
+        spec=spec, encounter_id=encounter_id,
+        loadouts=loadouts, diagnostics=diagnostics,
+    )
+
+
 __all__ = [
     "DEFAULT_MAX_BUILDS",
     "DEFAULT_TOP_N",
     "RANKING_SNAPSHOT_TTL_DAYS",
+    "SweepPhase1",
     "TalentFinderRun",
+    "build_sweep_phase1",
     "build_variants_for_spec_encounter",
+    "sweep_loadout_entry",
 ]

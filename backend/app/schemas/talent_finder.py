@@ -8,9 +8,18 @@ This module owns:
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.simulation import FightProfileKey, Precision
+
+TalentFinderStrategy = Literal["cluster", "sweep"]
+"""``cluster`` — expand the contested nodes of the WCL meta cluster
+(fast, but blind to consensus nodes the one-button optimum may want
+changed). ``sweep`` — sim-driven: start from the meta-consensus build,
+measure each single choice-flip's one-button DPS delta, combine the
+winners. Slower, but escapes the meta-envelope blind spot."""
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +94,8 @@ class TalentFinderRunIn(BaseModel):
     top_n: int = Field(default=15, ge=1, le=30)
     threshold: float = Field(default=0.30, ge=0.05, le=0.95)
     max_builds: int = Field(default=256, ge=1, le=1024)
+    strategy: TalentFinderStrategy = "cluster"
+    """Which search strategy to run — see :data:`TalentFinderStrategy`."""
 
 
 class TalentFinderDiagnostic(BaseModel):

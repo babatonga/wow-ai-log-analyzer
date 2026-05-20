@@ -95,70 +95,99 @@ async def run_talent_finder(
             f"under Admin → Talent-Finder."
         )
 
-    # 3. Build the variant set. The service fetches WCL characterRankings
-    #    itself (or reuses a cached snapshot), so there's no separate
-    #    top-logs refresh step. A WCL/encounter error surfaces as a 422.
-    try:
-        run = await talent_finder_service.build_variants_for_spec_encounter(
-            session,
-            spec=spec,
-            encounter_id=entry.encounter_id,
-            top_n=payload.top_n,
-            initial_threshold=payload.threshold,
-            max_builds=payload.max_builds,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("talent-finder: variant build failed")
-        raise ValidationAppError(
-            f"Couldn't build variants for "
-            f"{entry.encounter_name or entry.encounter_id} "
-            f"({exc.__class__.__name__}). The encounter ID may be wrong, "
-            f"or WCL is unreachable. Try again in a few minutes."
-        ) from exc
-
-    if not run.builds:
-        raise ValidationAppError(
-            "Couldn't derive any variant from the cluster. Diagnostics: "
-            + "; ".join(run.diagnostics[:5])
-        )
-
-    # 5. Persist as Simulation(mode=talent_finder).
-    iterations = PRECISION_ITERATIONS[payload.precision]
+    # 3. Build the loadout set. Both strategies fetch WCL
+    #    characterRankings via the service (cached snapshot); a
+    #    WCL/encounter error surfaces as a 422.
     base_label = (
         payload.label
         or f"Talent-Finder: {entry.encounter_name or entry.encounter_id} ({spec.name_en})"
     )
+    iterations = PRECISION_ITERATIONS[payload.precision]
 
-    parent = Simulation(
-        requested_by_id=user.id,
-        label=base_label[:255],
-        simc_profile=payload.simc_profile,
-        loadouts=[
+    if payload.strategy == "sweep":
+        try:
+            phase1 = await talent_finder_service.build_sweep_phase1(
+                session,
+                spec=spec,
+                encounter_id=entry.encounter_id,
+                threshold=payload.threshold,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("talent-finder: sweep phase-1 build failed")
+            raise ValidationAppError(
+                f"Couldn't build the sweep for "
+                f"{entry.encounter_name or entry.encounter_id} "
+                f"({exc.__class__.__name__}). The encounter ID may be wrong, "
+                f"or WCL is unreachable. Try again in a few minutes."
+            ) from exc
+        if not phase1.loadouts:
+            raise ValidationAppError(
+                "Couldn't build a sweep baseline. Diagnostics: "
+                + "; ".join(phase1.diagnostics[:5])
+            )
+        loadout_entries = phase1.loadouts
+        sim_mode = "talent_finder_sweep"
+        # The sweep converges on target_error; this is just the cap.
+        iterations = max(iterations, 20000)
+        worker_task = "talent_finder_sweep_task"
+    else:
+        try:
+            run = await talent_finder_service.build_variants_for_spec_encounter(
+                session,
+                spec=spec,
+                encounter_id=entry.encounter_id,
+                top_n=payload.top_n,
+                initial_threshold=payload.threshold,
+                max_builds=payload.max_builds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("talent-finder: variant build failed")
+            raise ValidationAppError(
+                f"Couldn't build variants for "
+                f"{entry.encounter_name or entry.encounter_id} "
+                f"({exc.__class__.__name__}). The encounter ID may be wrong, "
+                f"or WCL is unreachable. Try again in a few minutes."
+            ) from exc
+        if not run.builds:
+            raise ValidationAppError(
+                "Couldn't derive any variant from the cluster. Diagnostics: "
+                + "; ".join(run.diagnostics[:5])
+            )
+        loadout_entries = [
             {
                 "name": b.label,
                 "talents": b.simc_block,
                 "loadout_code": b.loadout_code,
             }
             for b in run.builds
-        ],
+        ]
+        sim_mode = "talent_finder"
+        worker_task = "run_simulation_task"
+
+    # 4. Persist the Simulation + phase-1 (or all) child runs.
+    parent = Simulation(
+        requested_by_id=user.id,
+        label=base_label[:255],
+        simc_profile=payload.simc_profile,
+        loadouts=loadout_entries,
         fight_profiles=[payload.fight_profile_key],
         # Talent-Finder always sims with rotation="blizzard" (=
         # one_button_mode=1 + 25% GCD penalty) — that's the whole point.
         rotations=["blizzard"],
         iterations=iterations,
         precision=payload.precision,
-        mode="talent_finder",
+        mode=sim_mode,
         status=SimulationStatus.pending,
     )
     session.add(parent)
     await session.flush()  # need parent.id
 
-    for li, build in enumerate(run.builds):
+    for li, entry_dict in enumerate(loadout_entries):
         session.add(
             SimulationRun(
                 simulation_id=parent.id,
                 loadout_index=li,
-                loadout_name=build.label,
+                loadout_name=entry_dict.get("name", f"build {li + 1}"),
                 rotation="blizzard",
                 fight_profile_key=payload.fight_profile_key,
                 status=SimulationRunStatus.pending,
@@ -168,7 +197,7 @@ async def run_talent_finder(
     await session.commit()
     await session.refresh(parent)
 
-    await arq.enqueue_job("run_simulation_task", str(parent.id))
+    await arq.enqueue_job(worker_task, str(parent.id))
 
     # Re-load with runs eagerly populated so the 202 body matches the
     # standard /simulations response shape.

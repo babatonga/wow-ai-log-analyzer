@@ -26,7 +26,11 @@ from app.models import (
 from app.workers.tasks.analysis import run_analysis_task
 from app.workers.tasks.report_import import import_report_task
 from app.workers.tasks.seed_encounter import seed_encounter_task
-from app.workers.tasks.simulation import cleanup_old_simulations, run_simulation_task
+from app.workers.tasks.simulation import (
+    cleanup_old_simulations,
+    run_simulation_task,
+    talent_finder_sweep_task,
+)
 from app.workers.tasks.top_logs import refresh_all_top_logs
 from app.workers.tasks.wow_data import refresh_wow_data
 
@@ -180,6 +184,11 @@ class WorkerSettings:
         # (1800 s) so even a runaway profile can't pin a worker for
         # 35 min total — this ceiling is just the wall-clock envelope.
         func(run_simulation_task, timeout=35 * 60),
+        # 50 min — the talent-finder sweep runs two sim phases back to
+        # back (baseline + ~20 single-flip screens, then up to ~256
+        # combine variants). Each sim converges on target_error so the
+        # count, not raw iterations, drives wall-clock.
+        func(talent_finder_sweep_task, timeout=50 * 60),
     ]
     cron_jobs = [
         cron(refresh_all_top_logs, name="refresh_all_top_logs", **_cron_kwargs),
