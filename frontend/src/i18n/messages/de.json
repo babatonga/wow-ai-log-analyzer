@@ -152,7 +152,15 @@
       "strategy_cluster_hint": "Variiert nur die Talent-Slots, bei denen die Top-1000 uneinig sind. Schneller erster Blick, aber blind für meta-einstimmige Talente. Laufzeit ~5-10 min.",
       "runtimeNote": "Hinweis: Der Talent-Finder fährt hunderte Simulationen — das dauert. Die geschätzte Laufzeit der gewählten Strategie steht oben; du kannst die Seite verlassen und später zurückkommen.",
       "screeningTitle": "Einzel-Talent-Screening",
-      "screeningHint": "Jede Talent-Änderung vs. Baseline ({baseline} DPS), gemessen unter One-Button. Die Combine-Runde unten kombiniert die Gewinner."
+      "screeningHint": "Jede Talent-Änderung vs. Baseline ({baseline} DPS), gemessen unter One-Button. Die Combine-Runde unten kombiniert die Gewinner.",
+      "progressTitle": "Suche den besten Build…",
+      "progressPhaseScreen": "Meta-Builds screenen",
+      "progressPhaseFlips": "Einzelne Talent-Änderungen testen",
+      "progressPhaseCombine": "Beste Änderungen kombinieren",
+      "progressPhaseCluster": "Build-Varianten simulieren",
+      "progressPhaseOf": "Phase {n} von {total}",
+      "progressQueued": "In der Warteschlange — warte auf einen freien Slot…",
+      "progressNote": "Das fährt hunderte Simulationen und dauert eine Weile. Du kannst die Seite verlassen — es läuft im Hintergrund weiter."
     },
     "sidecarReady": "SimC-Sidecar bereit.",
     "sidecarUnreachable": "SimC-Sidecar nicht erreichbar — Admin muss den simc-Service starten.",

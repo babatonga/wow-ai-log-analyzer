@@ -152,7 +152,15 @@
       "strategy_cluster_hint": "Only varies the talent slots the top-1000 disagree on. Quick first look, but blind to talents the whole meta agrees on. Runtime ~5-10 min.",
       "runtimeNote": "Heads up: the Talent-Finder runs hundreds of simulations — it is not instant. Estimated runtime for the selected strategy is shown above; you can leave the page and come back.",
       "screeningTitle": "Single-talent screening",
-      "screeningHint": "Each talent change vs the baseline ({baseline} DPS), measured under one-button. The combine round below explores the winners together."
+      "screeningHint": "Each talent change vs the baseline ({baseline} DPS), measured under one-button. The combine round below explores the winners together.",
+      "progressTitle": "Searching for the best build…",
+      "progressPhaseScreen": "Screening meta builds",
+      "progressPhaseFlips": "Testing single talent changes",
+      "progressPhaseCombine": "Combining the best changes",
+      "progressPhaseCluster": "Simulating build variants",
+      "progressPhaseOf": "Phase {n} of {total}",
+      "progressQueued": "Queued — waiting for a free simulation slot…",
+      "progressNote": "This runs hundreds of simulations and takes a while. You can leave this page — it keeps going in the background."
     },
     "sidecarReady": "SimC sidecar ready.",
     "sidecarUnreachable": "SimC sidecar unreachable — ask an admin to start the simc service.",

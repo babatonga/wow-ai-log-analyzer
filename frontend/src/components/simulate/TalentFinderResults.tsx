@@ -1,7 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, Crown, Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Crown,
+  Loader2,
+  Sparkles,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { Button, Card } from "@/components/ui";
@@ -26,15 +34,31 @@ const TOP_N_RENDERED = 5;
 export function TalentFinderResults({ simulation, locale }: Props) {
   const t = useTranslations();
 
-  const succeeded = (simulation.runs ?? []).filter(
-    (r) => r.status === "succeeded",
-  );
   const loadouts = simulation.loadouts ?? [];
   // Sweep runs tag their loadouts with tf_role; cluster runs don't.
   const sweepMode = loadouts.some((l) => l.tf_role);
 
   const roleOf = (run: SimulationRunOut): string =>
     loadouts[run.loadout_index]?.tf_role || "";
+
+  // While the sim is still working, show a phase-aware progress card
+  // rather than ranking the intermediate screen builds as if they were
+  // the final answer.
+  const isWorking =
+    simulation.status === "pending" || simulation.status === "running";
+  if (isWorking) {
+    return (
+      <TalentFinderProgress
+        simulation={simulation}
+        sweepMode={sweepMode}
+        roleOf={roleOf}
+      />
+    );
+  }
+
+  const succeeded = (simulation.runs ?? []).filter(
+    (r) => r.status === "succeeded",
+  );
 
   // Final ranking pool: for a sweep, only the combine round is sized at
   // the tight target_error, so rank those; the phase-1 baseline/flip
@@ -59,7 +83,7 @@ export function TalentFinderResults({ simulation, locale }: Props) {
     return (
       <Card>
         <p className="text-sm text-zinc-400">
-          {t("simulate.talentFinder.resultsWaiting")}
+          {simulation.error || t("simulate.talentFinder.resultsWaiting")}
         </p>
       </Card>
     );
@@ -81,6 +105,11 @@ export function TalentFinderResults({ simulation, locale }: Props) {
                 shown: topFive.length,
               })}
             </p>
+            {simulation.error && (
+              <p className="mt-2 rounded-md border border-rose-500/30 bg-rose-500/5 px-3 py-2 text-xs text-rose-300">
+                {simulation.error}
+              </p>
+            )}
           </div>
         </div>
       </Card>
@@ -103,6 +132,117 @@ export function TalentFinderResults({ simulation, locale }: Props) {
         />
       ))}
     </div>
+  );
+}
+
+interface ProgressProps {
+  simulation: Simulation;
+  sweepMode: boolean;
+  roleOf: (run: SimulationRunOut) => string;
+}
+
+/** Live progress while a Talent-Finder run is still working.
+ *
+ * Sweep runs are created phase by phase (screen → flips → combine) and
+ * each phase's run set is created up-front, so we track the *latest*
+ * phase that has runs and show that phase's done/total — the bar stays
+ * monotone within a phase instead of dipping when later phases append
+ * their runs. Cluster runs are a single pre-created batch. */
+function TalentFinderProgress({ simulation, sweepMode, roleOf }: ProgressProps) {
+  const t = useTranslations();
+  const runs = simulation.runs ?? [];
+  const isTerminal = (r: SimulationRunOut) =>
+    r.status === "succeeded" || r.status === "failed";
+
+  let phaseRuns: SimulationRunOut[];
+  let phaseLabel: string;
+  let phaseIdx = 1;
+  if (sweepMode) {
+    const screen = runs.filter((r) => roleOf(r) === "screen");
+    const flips = runs.filter(
+      (r) => roleOf(r) === "baseline" || roleOf(r) === "sweep",
+    );
+    const combine = runs.filter((r) => roleOf(r) === "combine");
+    if (combine.length > 0) {
+      phaseRuns = combine;
+      phaseLabel = t("simulate.talentFinder.progressPhaseCombine");
+      phaseIdx = 3;
+    } else if (flips.length > 0) {
+      phaseRuns = flips;
+      phaseLabel = t("simulate.talentFinder.progressPhaseFlips");
+      phaseIdx = 2;
+    } else {
+      phaseRuns = screen;
+      phaseLabel = t("simulate.talentFinder.progressPhaseScreen");
+      phaseIdx = 1;
+    }
+  } else {
+    phaseRuns = runs;
+    phaseLabel = t("simulate.talentFinder.progressPhaseCluster");
+  }
+
+  const total = phaseRuns.length;
+  const done = phaseRuns.filter(isTerminal).length;
+  const running = phaseRuns.filter((r) => r.status === "running").length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  // Nothing of ours has started executing yet — we're sitting in the
+  // sidecar queue. Show that instead of a misleading "0 of N".
+  const notStarted =
+    runs.length === 0 || runs.every((r) => r.status === "pending");
+
+  return (
+    <Card>
+      <div className="flex items-start gap-3">
+        <Loader2
+          className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-amber-400"
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold">
+            {t("simulate.talentFinder.progressTitle")}
+          </h2>
+
+          <div className="mt-3">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="min-w-0 truncate text-zinc-200">
+                {sweepMode && (
+                  <span className="mr-2 rounded bg-bg-3 px-1.5 py-0.5 text-xs text-zinc-400">
+                    {t("simulate.talentFinder.progressPhaseOf", {
+                      n: phaseIdx,
+                      total: 3,
+                    })}
+                  </span>
+                )}
+                {phaseLabel}
+              </span>
+              <span className="shrink-0 tabular-nums text-zinc-400">
+                {notStarted ? 0 : pct}%
+              </span>
+            </div>
+
+            <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-bg-3">
+              <div
+                className="h-full bg-amber-400 transition-[width] duration-500"
+                style={{ width: `${notStarted ? 0 : pct}%` }}
+              />
+            </div>
+
+            <p className="mt-1.5 text-xs text-zinc-500">
+              {notStarted
+                ? t("simulate.talentFinder.progressQueued")
+                : t("simulate.progressRuns", { done, total }) +
+                  (running > 0
+                    ? ` · ${t("simulate.progressRunning", { n: running })}`
+                    : "")}
+            </p>
+          </div>
+
+          <p className="mt-3 rounded-md border border-bg-3 bg-bg-2/40 px-3 py-2 text-xs text-zinc-400">
+            {t("simulate.talentFinder.progressNote")}
+          </p>
+        </div>
+      </div>
+    </Card>
   );
 }
 

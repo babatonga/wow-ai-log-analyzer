@@ -290,7 +290,14 @@ function SimulateView({ locale }: { locale: Locale }) {
 
       {mode === "talent_finder" && (
         <TalentFinderForm
-          onSimulationStarted={(sim) => setActiveSimulationId(sim.id)}
+          onSimulationStarted={(sim) => {
+            setActiveSimulationId(sim.id);
+            // Surface the freshly-started run in "your simulations"
+            // immediately — without this the list only picks it up on
+            // the next poll, and the poll is off when nothing was
+            // running yet.
+            qc.invalidateQueries({ queryKey: ["my-simulations"] });
+          }}
         />
       )}
 
