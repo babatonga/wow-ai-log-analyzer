@@ -53,6 +53,15 @@ class AnthropicProvider:
         except ValueError:
             logger.warning("Claude response did not contain a JSON object; returning text only.")
 
+        # Same guard as the OpenAI-compatible provider: a max_tokens-truncated
+        # response without parseable JSON must fail loudly, not persist as an
+        # empty "succeeded" report.
+        if not structured and getattr(message, "stop_reason", None) == "max_tokens":
+            raise UpstreamError(
+                f"Claude response hit the {max_t}-token output limit before "
+                "producing the structured JSON. Raise AI_MAX_TOKENS."
+            )
+
         return AiResponse(
             text=text,
             structured=structured,
