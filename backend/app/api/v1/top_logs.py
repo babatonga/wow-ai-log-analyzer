@@ -22,9 +22,14 @@ async def list_top_logs(
     spec_slug: str = Query(..., description="GameSpec slug, e.g. 'priest_holy'"),
     encounter_id: int | None = Query(default=None),
     metric: str | None = Query(default=None, pattern=r"^(dps|hps)$"),
+    difficulty: int | None = Query(default=None, ge=1, le=5),
 ) -> list[TopLogOut]:
     rows = await top_logs_service.list_top_logs(
-        session, spec_slug=spec_slug, encounter_id=encounter_id, metric=metric
+        session,
+        spec_slug=spec_slug,
+        encounter_id=encounter_id,
+        metric=metric,
+        difficulty=difficulty,
     )
     pairs = list({(r.encounter_id, r.encounter_name) for r in rows})
     name_map = await resolve_encounter_names_with_fallback(

@@ -134,6 +134,15 @@ class OpenAiCompatibleProvider:
             extra_body["chat_template_kwargs"] = {
                 "enable_thinking": settings.local_ai_enable_thinking,
             }
+            if settings.local_ai_enable_thinking:
+                # Qwen reasoning models degenerate into endless repetition
+                # loops at near-greedy sampling — observed live: a German
+                # analysis burned the full 48k output budget inside the
+                # reasoning trace without ever finishing. Qwen's model card
+                # prescribes temperature≈0.6 / top_p 0.95 for thinking
+                # mode, so floor the caller's (analysis uses 0.2) to that.
+                temperature = max(temperature, 0.6)
+                extra_body["top_p"] = 0.95
         # OpenAI's GPT-5 / o-series reasoning. Without this parameter
         # the Chat Completions API silently runs the model in "no
         # reasoning" mode (reasoning_tokens=0 in usage) — verified by
@@ -226,6 +235,23 @@ class OpenAiCompatibleProvider:
             logger.warning(
                 "%s response did not contain a parseable JSON object; returning text only.",
                 self._mode,
+            )
+
+        # A response cut off at the output-token limit BEFORE any JSON was
+        # produced is a hard failure, not a degraded success — with
+        # thinking enabled the model can burn the entire budget on its
+        # reasoning trace and the "answer" is then just truncated CoT.
+        # Storing that as ``succeeded`` renders an empty report in the UI
+        # with no hint at the cause, so fail loudly instead. (If the JSON
+        # parsed despite finish_reason=length — e.g. only trailing prose
+        # got cut — we keep the result.)
+        finish_reason = getattr(choice, "finish_reason", None) if choice else None
+        if not structured and finish_reason == "length":
+            raise UpstreamError(
+                f"{self._mode} response hit the {max_t}-token output limit before "
+                "producing the structured JSON (the reasoning trace consumed the "
+                "whole budget). Raise AI_MAX_TOKENS or disable "
+                "LOCAL_AI_ENABLE_THINKING."
             )
 
         return AiResponse(

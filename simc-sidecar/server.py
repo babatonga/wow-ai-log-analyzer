@@ -87,21 +87,23 @@ JOB_RETENTION_S = int(os.environ.get("SIMC_JOB_RETENTION_S", "3600") or "3600")
 
 # Current-patch player consumable defaults. /simc paste from in-game
 # normally has none of these, but the user expects us to assume "best
-# raid prep" — full flask + food + augment rune + potion. These names
-# track The War Within and must be updated when a new expansion ships
+# raid prep". These names track Midnight (MID2 profiles in the simc
+# repo) and must be updated when a new expansion/season ships
 # (alongside SimC itself bumping its module's data tables). If a
 # profile already sets one of these we keep the user's choice.
 DEFAULT_CONSUMABLES: dict[str, str] = {
-    "flask": "flask_of_alchemical_chaos_3",
-    "food": "feast_of_the_divine_day",
-    "augmentation": "crystallized",
-    "potion": "tempered_potion_3",
-    # NOTE: temporary_enchant is intentionally NOT defaulted. The right
-    # choice is spec-specific (DK runeforge, Rogue poison, weapon oil for
-    # casters, etc.) and the previously-bundled Howling Rune was actually
-    # ilvl-capped at 120 — silently inactive on any current-tier weapon
-    # and the source of confusing "requires a maximum ilevel of 120"
-    # warnings. We let the /simc paste provide it (or omit it).
+    "food": "harandar_celebration",
+    "augmentation": "void_touched",
+    # NOTE: flask and potion are intentionally NOT defaulted anymore.
+    # Unlike TWW (where flask_of_alchemical_chaos / tempered_potion were
+    # universal), Midnight's flasks and potions are spec-specific — the
+    # MID2 profiles split between flask_of_the_shattered_sun /
+    # flask_of_the_magisters and potion_of_recklessness /
+    # lights_potential depending on spec. A wrong default would silently
+    # skew results, so like temporary_enchant we let the /simc paste
+    # provide them (or omit them). temporary_enchant stays un-defaulted
+    # for the same spec-specific reason (DK runeforge, Rogue poison,
+    # weapon oil for casters, etc.).
 }
 
 # Buffs raidbots explicitly forces on for every sim (regardless of the

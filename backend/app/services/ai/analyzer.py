@@ -130,6 +130,7 @@ async def _ensure_references(
     spec_slug: str,
     encounter_id: int,
     metric: str,
+    difficulty: int | None = None,
 ) -> bool:
     """Synchronously seed top logs for (spec, encounter, metric) so the
     analyser has reference data.
@@ -178,14 +179,20 @@ async def _ensure_references(
                         # encounters produce empty rankings via the same
                         # path which is fine.
                         is_raid=True,
+                        # The caller passes the difficulty of the user's
+                        # own fight so a Heroic log is compared against
+                        # Heroic top logs; None falls back to the .env
+                        # default (Mythic).
+                        difficulty=difficulty,
                         wcl_client=wcl,
                     )
                 # context manager commits the seed_session transaction
         logger.info(
-            "sync-seed for spec=%s encounter=%s metric=%s → %s rows",
+            "sync-seed for spec=%s encounter=%s metric=%s difficulty=%s → %s rows",
             spec_slug,
             encounter_id,
             metric,
+            difficulty,
             len(rows),
         )
         return len(rows) > 0
@@ -200,7 +207,13 @@ async def _ensure_references(
 
 
 async def _fetch_top_log_references(
-    session: AsyncSession, *, spec_slug: str, encounter_id: int | None, role: str, limit: int = 5
+    session: AsyncSession,
+    *,
+    spec_slug: str,
+    encounter_id: int | None,
+    role: str,
+    difficulty: int | None = None,
+    limit: int = 5,
 ) -> list[dict[str, Any]]:
     if not encounter_id or not spec_slug:
         return []
@@ -223,6 +236,11 @@ async def _fetch_top_log_references(
         .order_by(TopLog.rank.asc())
         .limit(limit)
     )
+    # Raid analyses compare against top logs of the SAME difficulty as the
+    # user's own fight (Heroic run → Heroic references). ``None`` (M+ or
+    # unknown difficulty) keeps the historical unfiltered behaviour.
+    if difficulty is not None:
+        stmt = stmt.where(TopLog.difficulty == difficulty)
     rows = (await session.execute(stmt)).scalars().all()
     # Drop rows whose detail blob was written by an older code shape —
     # they'd feed the AI a payload missing fields (e.g. boss_casts on
@@ -561,6 +579,174 @@ async def _collect_localized_names(
     return names
 
 
+# ItemEffect.TriggerType → human label for the prompt.
+_EFFECT_TRIGGER_LABEL = {0: "use", 1: "equip", 2: "proc"}
+# Effect texts are tooltips with formatting variables ($s1, ${...}) — long
+# outliers get truncated so 30+ items can't blow up the prompt budget.
+_EFFECT_TEXT_MAX = 400
+
+
+async def _collect_item_effect_context(
+    session: AsyncSession,
+    *,
+    locale: str,
+    gear: list[dict[str, Any]],
+    references: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the trinket-effect / set-bonus context for the prompt.
+
+    Sources the ``itemfx`` / ``itemset`` / ``spelldesc`` rows that
+    ``wow_data_service._import_item_effects`` mirrors from wago.tools, so
+    the AI can compare what the player's trinkets and tier bonuses DO
+    against the top logs' — instead of guessing from item names.
+
+    Returns ``{"item_effects": {item_id: [{trigger, text}]},
+    "set_bonuses": {"player": [...], "references": {rank: [...]}}}`` —
+    empty maps when the effect tables haven't been imported yet, which
+    the prompt builder treats as "section absent" (graceful downgrade).
+    """
+    from collections import Counter
+
+    from app.models import WowLocalization
+
+    player_item_ids = [int(g["item_id"]) for g in gear if g.get("item_id")]
+    ref_item_ids: dict[int, list[int]] = {}
+    for ref in references:
+        detail = ref.get("detail") or {}
+        ids = [int(g["item_id"]) for g in (detail.get("gear") or []) if g.get("item_id")]
+        if ids:
+            ref_item_ids[int(ref.get("rank") or 0)] = ids
+    all_item_ids = set(player_item_ids)
+    for ids in ref_item_ids.values():
+        all_item_ids.update(ids)
+    if not all_item_ids:
+        return {}
+
+    fx_rows = (
+        await session.execute(
+            select(WowLocalization.game_id, WowLocalization.extras).where(
+                WowLocalization.kind == "itemfx",
+                WowLocalization.locale == "xx",
+                WowLocalization.game_id.in_(all_item_ids),
+            )
+        )
+    ).all()
+    if not fx_rows:
+        return {}
+
+    effects_of_item: dict[int, list[dict[str, int]]] = {}
+    set_of_item: dict[int, int] = {}
+    for game_id, extras in fx_rows:
+        extras = extras or {}
+        if extras.get("effects"):
+            effects_of_item[int(game_id)] = extras["effects"]
+        if extras.get("set_id"):
+            set_of_item[int(game_id)] = int(extras["set_id"])
+
+    # Localized set rows (name + bonus list), preferred locale with EN fallback.
+    sets: dict[int, dict[str, Any]] = {}
+    if set_of_item:
+        set_rows = (
+            await session.execute(
+                select(
+                    WowLocalization.game_id,
+                    WowLocalization.locale,
+                    WowLocalization.name,
+                    WowLocalization.extras,
+                ).where(
+                    WowLocalization.kind == "itemset",
+                    WowLocalization.game_id.in_(set(set_of_item.values())),
+                    WowLocalization.locale.in_([locale, "en"]),
+                )
+            )
+        ).all()
+        for game_id, row_locale, name, extras in sorted(
+            set_rows, key=lambda r: r[1] != "en"  # EN first so `locale` overwrites
+        ):
+            sets[int(game_id)] = {"name": name, "bonuses": (extras or {}).get("bonuses") or []}
+
+    spell_ids: set[int] = set()
+    for effs in effects_of_item.values():
+        spell_ids.update(int(e["spell_id"]) for e in effs if e.get("spell_id"))
+    for srow in sets.values():
+        spell_ids.update(int(b["spell_id"]) for b in srow["bonuses"] if b.get("spell_id"))
+
+    descs: dict[int, str] = {}
+    if spell_ids:
+        desc_rows = (
+            await session.execute(
+                select(
+                    WowLocalization.game_id, WowLocalization.locale, WowLocalization.name
+                ).where(
+                    WowLocalization.kind == "spelldesc",
+                    WowLocalization.game_id.in_(spell_ids),
+                    WowLocalization.locale.in_([locale, "en"]),
+                )
+            )
+        ).all()
+        for game_id, row_locale, name in sorted(desc_rows, key=lambda r: r[1] != "en"):
+            descs[int(game_id)] = name[:_EFFECT_TEXT_MAX]
+
+    item_effects: dict[str, list[dict[str, Any]]] = {}
+    for item_id, effs in effects_of_item.items():
+        entries = [
+            {
+                "trigger": _EFFECT_TRIGGER_LABEL.get(int(e.get("trigger") or 0), "other"),
+                "text": descs[int(e["spell_id"])],
+            }
+            for e in effs
+            if int(e.get("spell_id") or 0) in descs
+        ]
+        if entries:
+            item_effects[str(item_id)] = entries
+
+    def _set_summary(item_ids: list[int]) -> list[dict[str, Any]]:
+        counts = Counter(set_of_item[i] for i in item_ids if i in set_of_item)
+        out = []
+        for set_id, n in counts.items():
+            srow = sets.get(set_id)
+            if not srow:
+                continue
+            bonuses = [
+                {
+                    "pieces_required": int(b.get("threshold") or 0),
+                    "active": n >= int(b.get("threshold") or 0),
+                    # ChrSpecID 0 = all specs. We can't map our spec slugs
+                    # to Blizzard spec IDs, so spec-specific bonus texts
+                    # are all included — the model picks the matching one
+                    # from the ability names in the text.
+                    "spec_specific": bool(b.get("spec_id")),
+                    "text": descs.get(int(b.get("spell_id") or 0)),
+                }
+                for b in srow["bonuses"]
+            ]
+            bonuses = [b for b in bonuses if b["text"]]
+            if bonuses:
+                out.append(
+                    {"set_name": srow["name"], "pieces_equipped": n, "bonuses": bonuses}
+                )
+        return out
+
+    set_bonuses: dict[str, Any] = {}
+    player_sets = _set_summary(player_item_ids)
+    if player_sets:
+        set_bonuses["player"] = player_sets
+    ref_sets = {
+        str(rank): summary
+        for rank, ids in ref_item_ids.items()
+        if (summary := _set_summary(ids))
+    }
+    if ref_sets:
+        set_bonuses["top_log_references_by_rank"] = ref_sets
+
+    out: dict[str, Any] = {}
+    if item_effects:
+        out["item_effects"] = item_effects
+    if set_bonuses:
+        out["set_bonuses"] = set_bonuses
+    return out
+
+
 async def _collect_talent_spell_ids(
     session: AsyncSession,
     *,
@@ -722,8 +908,18 @@ async def request_analysis(
     except Exception:  # noqa: BLE001
         logger.exception("Player enrichment failed; continuing with what we have")
 
+    # Raid fights compare against top logs of their own difficulty
+    # (Heroic run → Heroic references) — crucial at season start, when
+    # Mythic has no public logs yet. M+ fights (keystone_level set) keep
+    # the difficulty-agnostic behaviour.
+    ref_difficulty = fight.difficulty if fight.keystone_level is None else None
+
     references = await _fetch_top_log_references(
-        session, spec_slug=player.spec_slug, encounter_id=fight.encounter_id, role=role_focus
+        session,
+        spec_slug=player.spec_slug,
+        encounter_id=fight.encounter_id,
+        role=role_focus,
+        difficulty=ref_difficulty,
     )
 
     # If no reference data is cached for this (spec, encounter, metric),
@@ -737,6 +933,7 @@ async def request_analysis(
             spec_slug=player.spec_slug,
             encounter_id=int(fight.encounter_id),
             metric=metric_for_seed,
+            difficulty=ref_difficulty,
         )
         if seeded:
             references = await _fetch_top_log_references(
@@ -744,6 +941,7 @@ async def request_analysis(
                 spec_slug=player.spec_slug,
                 encounter_id=fight.encounter_id,
                 role=role_focus,
+                difficulty=ref_difficulty,
             )
 
     if not references:
@@ -947,6 +1145,9 @@ async def request_analysis(
     talent_spell_ids = await _collect_talent_spell_ids(
         session, player_summary=player_summary, references=references
     )
+    item_effect_context = await _collect_item_effect_context(
+        session, locale=locale, gear=gear, references=references
+    )
 
     # If the row already exists (worker path), it tells us whether BYOK was
     # requested. New rows fall through to the app-wide path.
@@ -1024,6 +1225,7 @@ async def request_analysis(
         top_log_references=references,
         ilvl_context=_ilvl_context(player.item_level, references),
         localized_names=localized_names,
+        item_effect_context=item_effect_context,
     )
     sys_prompt = system_prompt_for("de" if locale == "de" else "en")
 

@@ -87,10 +87,11 @@ async def refresh_top_logs_for_spec_encounter(
     limit: int | None = None,
     detail_count: int | None = None,
     is_raid: bool = True,
+    difficulty: int | None = None,
     wcl_client: WclClient | None = None,
     incremental: bool = True,
 ) -> list[TopLog]:
-    """Refresh the top-log cache for a (spec, encounter, metric).
+    """Refresh the top-log cache for a (spec, encounter, metric, difficulty).
 
     By default this is *incremental*: detail data (casts/gear/buffs/etc.) is
     only re-fetched from WCL for entries that weren't already in the cache.
@@ -99,8 +100,23 @@ async def refresh_top_logs_for_spec_encounter(
     are dropped, new entries get fresh detail fetched, lasting WCL API
     budget where it matters. Pass ``incremental=False`` to force a full
     re-fetch.
+
+    ``difficulty`` overrides the .env-wide ``TOP_LOGS_RAID_DIFFICULTY``
+    for raid encounters — the analyzer passes the difficulty of the
+    user's own fight so a Heroic log is compared against Heroic top logs
+    (and works at season start, when Mythic has no public entries yet).
+    The cache is scoped per difficulty: rows for different difficulties
+    of the same encounter coexist and refreshes only replace their own
+    difficulty's rows. ``None`` keeps the settings default.
     """
     metric = metric or _metric_for_role(spec.role)
+    effective_difficulty: int | None = (
+        difficulty
+        if difficulty is not None
+        else (settings.top_logs_raid_difficulty if is_raid else None)
+    )
+    if not is_raid:
+        effective_difficulty = None
     limit = limit or settings.top_logs_limit
     detail_count = detail_count if detail_count is not None else settings.top_logs_detail_count
     own = wcl_client is None
@@ -115,6 +131,7 @@ async def refresh_top_logs_for_spec_encounter(
                     TopLog.spec_slug == spec.slug,
                     TopLog.encounter_id == encounter_id,
                     TopLog.metric == metric,
+                    TopLog.difficulty == effective_difficulty,
                 )
             )
         ).scalars().all()
@@ -142,7 +159,7 @@ async def refresh_top_logs_for_spec_encounter(
             "page": 1,
             "partition": None,
             "serverRegion": settings.top_logs_region or None,
-            "difficulty": settings.top_logs_raid_difficulty if is_raid else None,
+            "difficulty": effective_difficulty,
         }
         payload = await client.query(ENCOUNTER_RANKINGS, rankings_args)
         rankings = parse_encounter_rankings(payload)
@@ -241,6 +258,10 @@ async def refresh_top_logs_for_spec_encounter(
             TopLog.spec_slug == spec.slug,
             TopLog.encounter_id == encounter_id,
             TopLog.metric == metric,
+            # Scoped per difficulty so e.g. Heroic and Mythic caches for
+            # the same encounter can coexist — a refresh only replaces
+            # its own difficulty's rows.
+            TopLog.difficulty == effective_difficulty,
         )
     )
 
@@ -253,7 +274,7 @@ async def refresh_top_logs_for_spec_encounter(
                 spec_slug=spec.slug,
                 encounter_id=r["encounter_id"],
                 encounter_name=r["encounter_name"],
-                difficulty=settings.top_logs_raid_difficulty if is_raid else None,
+                difficulty=effective_difficulty,
                 metric=metric,
                 rank=r["rank"],
                 amount=r["amount"],
@@ -409,11 +430,19 @@ async def list_top_logs(
     spec_slug: str,
     encounter_id: int | None = None,
     metric: str | None = None,
+    difficulty: int | None = None,
 ) -> list[TopLog]:
     stmt = select(TopLog).where(TopLog.spec_slug == spec_slug)
     if encounter_id is not None:
         stmt = stmt.where(TopLog.encounter_id == encounter_id)
     if metric is not None:
         stmt = stmt.where(TopLog.metric == metric)
-    stmt = stmt.order_by(TopLog.encounter_id, TopLog.rank.asc())
+    if difficulty is not None:
+        stmt = stmt.where(TopLog.difficulty == difficulty)
+    # Secondary difficulty ordering keeps the list deterministic now that
+    # several difficulties of the same encounter can be cached at once
+    # (highest first, so Mythic ranks lead when both exist).
+    stmt = stmt.order_by(
+        TopLog.encounter_id, TopLog.difficulty.desc().nulls_last(), TopLog.rank.asc()
+    )
     return list((await session.execute(stmt)).scalars().all())

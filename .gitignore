@@ -68,3 +68,5 @@ frontend/public/generated/
 # --- Claude Code workspace ---
 .claude/projects/
 .claude/
+
+.local/
