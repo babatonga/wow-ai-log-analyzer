@@ -39,7 +39,9 @@ LOCALES: tuple[tuple[str, str], ...] = (("en", "enUS"), ("de", "deDE"))
 # about a new kind (e.g. ``talent`` added in v0.2.0) that the previous
 # success run never wrote. Add new kinds here at the same time you add a
 # new importer phase below.
-EXPECTED_KINDS: frozenset[str] = frozenset({"spell", "talent", "item", "encounter"})
+EXPECTED_KINDS: frozenset[str] = frozenset(
+    {"spell", "talent", "item", "encounter", "itemfx", "itemset", "spelldesc"}
+)
 
 # Larger CSVs (ItemSparse weighs ~80 MB / locale) require a generous timeout
 # and a bigger HTTP read buffer; httpx defaults are fine for now.
@@ -589,6 +591,195 @@ async def _import_encounters(
     return total
 
 
+async def _import_item_effects(
+    session: AsyncSession, client: httpx.AsyncClient, build: str, missing: list[str]
+) -> int:
+    """Import item→effect links, item-set bonuses and the spell texts behind them.
+
+    Feeds the analyzer's gear comparison: with these rows the AI can see
+    WHAT an equipped trinket / tier-set bonus actually does instead of
+    guessing from the item name. Emitted kinds:
+
+    - ``itemfx``  (locale ``xx``): per equippable item,
+      ``extras.effects = [{"trigger": 0|1|2, "spell_id": …}]``
+      (0 = On Use, 1 = On Equip, 2 = Proc) and ``extras.set_id`` when the
+      item belongs to an item set.
+    - ``itemset`` (per locale): set name + ``extras.bonuses =
+      [{"threshold": …, "spell_id": …, "spec_id": …}]``.
+    - ``spelldesc`` (per locale): the localized effect text of exactly the
+      spells referenced above (``name`` holds the description — importing
+      all 400k spell descriptions would bloat the table for nothing).
+
+    MUST run after ``_import_items`` — the equippable filter (inventory
+    type != 0) reads the freshly imported ``item`` rows so we skip the
+    ~100k consumables/quest items that also carry ItemEffect rows.
+    """
+    # 1) Locale-independent link tables.
+    try:
+        effect_text = await _download_csv(client, "ItemEffect", build, "enUS")
+        link_text = await _download_csv(client, "ItemXItemEffect", build, "enUS")
+        setspell_text = await _download_csv(client, "ItemSetSpell", build, "enUS")
+    except UpstreamError as exc:
+        logger.warning("item-effect link tables skipped: %s", exc)
+        missing.append("ItemEffect")
+        return 0
+
+    effects_by_id: dict[int, dict[str, int]] = {}
+    for entry in _iter_rows(effect_text):
+        try:
+            effects_by_id[int(entry["ID"])] = {
+                "trigger": int(entry.get("TriggerType") or 0),
+                "spell_id": int(entry.get("SpellID") or 0),
+            }
+        except (KeyError, ValueError):
+            continue
+
+    effects_by_item: dict[int, list[dict[str, int]]] = {}
+    for entry in _iter_rows(link_text):
+        try:
+            item_id = int(entry["ItemID"])
+            eff = effects_by_id.get(int(entry["ItemEffectID"]))
+        except (KeyError, ValueError):
+            continue
+        if eff and eff["spell_id"]:
+            effects_by_item.setdefault(item_id, []).append(eff)
+
+    bonuses_by_set: dict[int, list[dict[str, int]]] = {}
+    for entry in _iter_rows(setspell_text):
+        try:
+            bonuses_by_set.setdefault(int(entry["ItemSetID"]), []).append(
+                {
+                    "threshold": int(entry.get("Threshold") or 0),
+                    "spell_id": int(entry.get("SpellID") or 0),
+                    "spec_id": int(entry.get("ChrSpecID") or 0),
+                }
+            )
+        except (KeyError, ValueError):
+            continue
+
+    # 2) Equippable filter from the item rows _import_items just wrote.
+    equippable: set[int] = set()
+    res = await session.execute(
+        select(WowLocalization.game_id, WowLocalization.extras).where(
+            WowLocalization.kind == "item", WowLocalization.locale == "en"
+        )
+    )
+    for game_id, extras in res.all():
+        if int((extras or {}).get("inventory_type") or 0) != 0:
+            equippable.add(int(game_id))
+
+    # 3) Item sets: names per locale + set membership (ItemID_0..16).
+    set_of_item: dict[int, int] = {}
+    itemset_rows: list[dict[str, Any]] = []
+    used_set_ids: set[int] = set()
+    for locale_short, locale_code in LOCALES:
+        try:
+            set_text = await _download_csv(client, "ItemSet", build, locale_code)
+        except UpstreamError as exc:
+            logger.warning("ItemSet/%s skipped: %s", locale_code, exc)
+            missing.append(f"ItemSet/{locale_code}")
+            continue
+        for entry in _iter_rows(set_text):
+            try:
+                set_id = int(entry["ID"])
+            except (KeyError, ValueError):
+                continue
+            bonuses = bonuses_by_set.get(set_id)
+            if not bonuses:
+                continue  # cosmetic / legacy sets without bonuses
+            members = []
+            for i in range(17):
+                try:
+                    member = int(entry.get(f"ItemID_{i}") or 0)
+                except ValueError:
+                    member = 0
+                if member:
+                    members.append(member)
+            if not any(m in equippable for m in members):
+                continue
+            used_set_ids.add(set_id)
+            if locale_short == "en":
+                for m in members:
+                    set_of_item[m] = set_id
+            itemset_rows.append(
+                {
+                    "kind": "itemset",
+                    "game_id": set_id,
+                    "locale": locale_short,
+                    "name": (entry.get("Name_lang") or "").strip(),
+                    "extras": {"bonuses": bonuses},
+                }
+            )
+
+    # 4) itemfx rows for equippable items with effects and/or set membership.
+    itemfx_rows: list[dict[str, Any]] = []
+    needed_spells: set[int] = set()
+    for item_id in equippable:
+        effs = effects_by_item.get(item_id) or []
+        set_id = set_of_item.get(item_id)
+        if not effs and set_id is None:
+            continue
+        extras: dict[str, Any] = {}
+        if effs:
+            extras["effects"] = effs
+            needed_spells.update(e["spell_id"] for e in effs)
+        if set_id is not None:
+            extras["set_id"] = set_id
+        itemfx_rows.append(
+            {"kind": "itemfx", "game_id": item_id, "locale": "xx", "name": "", "extras": extras}
+        )
+    for set_id in used_set_ids:
+        needed_spells.update(
+            b["spell_id"] for b in bonuses_by_set.get(set_id, []) if b["spell_id"]
+        )
+
+    total = await _upsert_localizations(session, itemfx_rows)
+    total += await _upsert_localizations(session, itemset_rows)
+
+    # 5) Localized effect texts — only for the spells referenced above.
+    for locale_short, locale_code in LOCALES:
+        try:
+            spell_text = await _download_csv(client, "Spell", build, locale_code)
+        except UpstreamError as exc:
+            logger.warning("Spell/%s skipped: %s", locale_code, exc)
+            missing.append(f"Spell/{locale_code}")
+            continue
+        desc_rows: list[dict[str, Any]] = []
+        for entry in _iter_rows(spell_text):
+            try:
+                spell_id = int(entry["ID"])
+            except (KeyError, ValueError):
+                continue
+            if spell_id not in needed_spells:
+                continue
+            desc = (entry.get("Description_lang") or "").strip() or (
+                entry.get("AuraDescription_lang") or ""
+            ).strip()
+            if not desc:
+                continue
+            desc_rows.append(
+                {
+                    "kind": "spelldesc",
+                    "game_id": spell_id,
+                    "locale": locale_short,
+                    "name": desc,
+                    "extras": {},
+                }
+            )
+        del spell_text
+        n = await _upsert_localizations(session, desc_rows)
+        logger.info("imported Spell descriptions/%s: %s rows", locale_code, n)
+        total += n
+
+    logger.info(
+        "item effects: %s itemfx, %s itemset rows, %s effect spells",
+        len(itemfx_rows),
+        len(itemset_rows),
+        len(needed_spells),
+    )
+    return total
+
+
 # --------------------------------------------------------------------------------------
 # Orchestrator
 # --------------------------------------------------------------------------------------
@@ -693,6 +884,12 @@ async def run_full_import(session: AsyncSession, *, build: str | None = None) ->
             talents = await _import_talents(session, client, build, missing)
             await _set_phase("items")
             items = await _import_items(session, client, build, missing)
+            # Item effects need the freshly imported item rows for the
+            # equippable filter, so this MUST follow _import_items.
+            # Best-effort like talents: a missing wago table degrades the
+            # gear comparison but doesn't fail the whole import.
+            await _set_phase("item_effects")
+            item_effects = await _import_item_effects(session, client, build, missing)
             await _set_phase("encounters")
             encounters = await _import_encounters(session, client, build, missing)
             # trait_data.inc keeps our local talent decoder in lock-step
@@ -701,7 +898,9 @@ async def run_full_import(session: AsyncSession, *, build: str | None = None) ->
             # last good copy on disk.
             await _set_phase("trait_data")
             trait_records = await _refresh_trait_data_inc(client, build, missing)
-            run.rows_imported = spells + talents + items + encounters + trait_records
+            run.rows_imported = (
+                spells + talents + items + item_effects + encounters + trait_records
+            )
             run.finished_at = datetime.now(UTC)
             run.phase = ""
 
@@ -720,7 +919,8 @@ async def run_full_import(session: AsyncSession, *, build: str | None = None) ->
                 run.status = WowImportStatus.success.value
                 base = (
                     f"spells={spells} talents={talents} items={items} "
-                    f"encounters={encounters} trait_data={trait_records}"
+                    f"item_effects={item_effects} encounters={encounters} "
+                    f"trait_data={trait_records}"
                 )
                 if missing:
                     base += (

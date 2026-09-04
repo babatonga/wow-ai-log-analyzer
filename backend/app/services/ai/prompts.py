@@ -507,6 +507,7 @@ def build_user_prompt(
     top_log_references: list[dict[str, Any]],
     ilvl_context: dict[str, Any] | None = None,
     localized_names: dict[str, str] | None = None,
+    item_effect_context: dict[str, Any] | None = None,
 ) -> str:
     """Build the user-side prompt with all the structured data the model needs."""
     lang = "Respond in English." if locale == "en" else "Antworte auf Deutsch."
@@ -526,6 +527,14 @@ def build_user_prompt(
         # ship these as DBC entries, so we ground the model with this table.
         "stat_glossary": stat_glossary_for(locale),
     }
+    if item_effect_context:
+        # Tooltip texts of on-use/equip/proc effects for every item_id in
+        # the gear lists above, plus tier-set bonus texts with equipped
+        # piece counts for the player and each reference. Texts contain
+        # unresolved DBC formatting variables ($s1, ${...}) — treat those
+        # as placeholders for scaling numbers.
+        payload["item_effects"] = item_effect_context.get("item_effects") or {}
+        payload["set_bonuses"] = item_effect_context.get("set_bonuses") or {}
     body = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
     focus = (
         "Focus the analysis on healing throughput (HPS), mana usage, "
@@ -543,8 +552,22 @@ def build_user_prompt(
             "damage taken from boss mechanics."
         )
     )
+    effects_hint = ""
+    if item_effect_context:
+        effects_hint = (
+            "\n\nFor ``gear_and_trinket_notes``: the ``item_effects`` map holds the "
+            "actual tooltip text of every on-use/equip/proc effect (trinkets, "
+            "embellishments, weapons) for BOTH the player's and the top logs' "
+            "gear, and ``set_bonuses`` lists tier-set bonuses with equipped piece "
+            "counts and whether each threshold is active. Compare them explicitly: "
+            "name which trinket effects the top logs run that the player lacks and "
+            "why theirs fit the spec/fight better, and call out a missing or "
+            "inactive tier-set bonus (e.g. player at 3/4 pieces while references "
+            "have the 4-piece active) as a concrete upgrade action. Ignore "
+            "spec_specific bonus texts that clearly belong to another spec."
+        )
     return (
-        f"{lang}\n\n{focus}\n\n{JSON_SCHEMA_HINT}\n\n"
+        f"{lang}\n\n{focus}{effects_hint}\n\n{JSON_SCHEMA_HINT}\n\n"
         "Below is the structured data for ONE player on ONE fight, plus reference "
         "top-log entries (same spec, same encounter, region- and difficulty-"
         "filtered, with full detail data: casts, gear, buffs, debuffs, "
