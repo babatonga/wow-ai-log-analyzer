@@ -1,7 +1,7 @@
 """FastAPI dependency helpers."""
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import uuid
 from typing import Annotated
 
 from arq import ArqRedis, create_pool
@@ -58,7 +58,14 @@ async def get_current_user(
     sub = payload.get("sub")
     if not sub:
         raise AuthError("Invalid token: missing subject.")
-    user = (await session.execute(select(User).where(User.id == sub))).scalar_one_or_none()
+    # JWT subjects are strings; User.id is a Uuid column. Postgres/asyncpg
+    # coerces str→uuid implicitly, SQLite (tests) does not — compare with a
+    # real UUID so both dialects behave the same.
+    try:
+        user_id = uuid.UUID(str(sub))
+    except ValueError as exc:
+        raise AuthError("Invalid token: malformed subject.") from exc
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user or not user.is_active:
         raise AuthError("Account no longer active.")
     return user
