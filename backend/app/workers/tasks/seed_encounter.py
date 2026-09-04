@@ -16,6 +16,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
+from arq import Retry
 from sqlalchemy import select
 
 from app.db import async_session_factory
@@ -25,9 +26,26 @@ from app.services.wcl.client import WclClient
 
 logger = logging.getLogger(__name__)
 
+# Seeds are serialized via a Redis lock: every concurrent seed shares the
+# same WCL rate budget, so N parallel jobs multiply each job's wall-clock
+# by ~N and blow the 35-min arq timeout (three jobs died exactly at
+# 2100 s during the MID2 initial seed). One-at-a-time, a full 39-spec
+# encounter finishes in ~11 min. Jobs that don't get the lock re-queue
+# themselves via ``Retry(defer=…)`` — deferral doesn't consume any of the
+# job's own timeout, it just parks it back in the queue.
+SEED_LOCK_KEY = "seed_encounter:lock"
+# Must outlive the arq job timeout (35 min) so a hard-killed worker can't
+# leave the queue deadlocked; expiry frees the lock on its own.
+SEED_LOCK_TTL_S = 40 * 60
+SEED_RETRY_DEFER_S = 120
 
-async def seed_encounter_task(_ctx: dict, job_id: str) -> None:
+
+async def seed_encounter_task(ctx: dict, job_id: str) -> None:
     jid = uuid.UUID(job_id)
+    redis = ctx["redis"]
+    got_lock = await redis.set(SEED_LOCK_KEY, job_id, nx=True, ex=SEED_LOCK_TTL_S)
+    if not got_lock:
+        raise Retry(defer=SEED_RETRY_DEFER_S)
     succeeded = False
     job_total = 0
     encounter_id: int | None = None
@@ -118,6 +136,16 @@ async def seed_encounter_task(_ctx: dict, job_id: str) -> None:
                 tracked.finished_at = datetime.now(UTC)
         succeeded = True
     finally:
+        # Release the serialization lock — but only if it's still ours
+        # (after a TTL expiry another job may legitimately hold it now).
+        try:
+            holder = await redis.get(SEED_LOCK_KEY)
+            holder_s = holder.decode() if isinstance(holder, bytes) else holder
+            if holder_s == job_id:
+                await redis.delete(SEED_LOCK_KEY)
+        except Exception:  # noqa: BLE001
+            logger.exception("seed_encounter_task: lock release failed")
+
         # If we exit any other way (arq job_timeout, container restart,
         # bare BaseException), make sure the row doesn't get stuck on
         # ``running``. Open a fresh session because the outer one may have

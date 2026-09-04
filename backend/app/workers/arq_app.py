@@ -172,8 +172,14 @@ class WorkerSettings:
         # other.
         func(run_analysis_task, timeout=30 * 60),
         # 35 min — 39 specs × ~17 s WCL latency easily blows past the
-        # 10 min default for fresh-cache seeds.
-        func(seed_encounter_task, timeout=35 * 60),
+        # 10 min default for fresh-cache seeds. Seeds serialize on a Redis
+        # lock (see seed_encounter.py) and park themselves back in the
+        # queue via ``Retry(defer=120)`` while another seed holds it — so
+        # ``max_tries`` here must cover the whole waiting time, not real
+        # failures: ~90 × 2 min ≈ 3 h of queueing headroom for a full-raid
+        # seed burst. The global ``max_tries = 1`` below would otherwise
+        # kill the first deferred attempt immediately.
+        func(seed_encounter_task, timeout=35 * 60, max_tries=90),
         # 35 min — worst case is 3 loadouts × 3 fight profiles × 5000
         # iter where DungeonSlice can sit at ~3-5 min per run on a
         # mid-range box. The sidecar enforces its own per-call limit
