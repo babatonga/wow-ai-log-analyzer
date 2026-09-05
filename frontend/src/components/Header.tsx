@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "@/lib/api";
-import { clearAuth, getCachedUser, setCachedUser } from "@/lib/auth";
+import { clearAuth, getAccessToken, getCachedUser, setCachedUser } from "@/lib/auth";
 import { Button, Select } from "@/components/ui";
 import type { Locale } from "@/i18n/config";
 import { LOCALES } from "@/i18n/config";
@@ -22,6 +22,17 @@ export function Header({ locale }: { locale: Locale }) {
     let cancelled = false;
     const cached = getCachedUser();
     if (cached) setUser(cached);
+    // Logged out (no access token)? Skip the /users/me probe entirely —
+    // the request would just 401, and browsers log every failed request
+    // to the console regardless of our catch handler. Still clear any
+    // stale cached user so the UI can't show a ghost session.
+    if (!getAccessToken()) {
+      setUser(null);
+      clearAuth();
+      return () => {
+        cancelled = true;
+      };
+    }
     apiFetch<UserOut>("/api/v1/users/me")
       .then((u) => {
         if (cancelled) return;
