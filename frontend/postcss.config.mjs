@@ -1,6 +1,9 @@
-export default {
+// Tailwind 4: the PostCSS plugin moved into @tailwindcss/postcss and
+// includes vendor prefixing (Lightning CSS) — no separate autoprefixer.
+const config = {
   plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
+    "@tailwindcss/postcss": {},
   },
 };
+
+export default config;

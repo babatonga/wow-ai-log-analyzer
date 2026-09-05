@@ -1,6 +1,36 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* Tailwind 4 CSS-first theme — replaces tailwind.config.ts. Custom
+   tokens become CSS variables; utilities like bg-bg-0 / text-accent /
+   shadow-glow / font-display derive from these automatically. */
+@theme {
+  /* dark slate base */
+  --color-bg-0: #0a0d12;
+  --color-bg-1: #11161c;
+  --color-bg-2: #161c24;
+  --color-bg-3: #1f2933;
+
+  /* WoW gold-ish, but generic */
+  --color-accent: #f59e0b;
+  --color-accent-fg: #0b0d10;
+  --color-accent-muted: #fbbf24;
+
+  --color-severity-critical: #ef4444;
+  --color-severity-high: #f97316;
+  --color-severity-medium: #facc15;
+  --color-severity-low: #38bdf8;
+  --color-severity-info: #94a3b8;
+
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Cinzel", "Inter", serif;
+
+  --shadow-glow: 0 0 0 1px rgba(245, 158, 11, 0.35),
+    0 8px 24px -12px rgba(245, 158, 11, 0.4);
+}
+
+/* darkMode: "class" equivalent (the app is dark-only today, but keep
+   the variant so dark:* utilities keep working if they get used). */
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   html {
@@ -16,8 +46,6 @@
   }
 }
 
-@layer utilities {
-  .container-page {
-    @apply mx-auto max-w-6xl px-4 py-8;
-  }
+@utility container-page {
+  @apply mx-auto max-w-6xl px-4 py-8;
 }

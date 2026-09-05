@@ -13,9 +13,8 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   output: "standalone",
-  experimental: {
-    typedRoutes: true,
-  },
+  // Stable since Next 15.5 (was experimental.typedRoutes).
+  typedRoutes: true,
   async headers() {
     return [
       {
