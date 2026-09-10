@@ -355,7 +355,11 @@
     "topLogsRefreshDps": "Nur DPS aktualisieren (inkrementell)",
     "topLogsRefreshHps": "Nur HPS aktualisieren (inkrementell)",
     "topLogsMetric": "Metrik",
-    "topLogsMetricAll": "Alle"
+    "topLogsMetricAll": "Alle",
+    "aiReasoningEffortHintAnthropic": "Aktiviert Claudes adaptives Thinking mit der gewählten Effort-Stufe (Claude 4.6+/Fable; „minimal\" wird zu „low\"). Leer = kein explizites Reasoning.",
+    "aiMaxTokens": "Max. Output-Tokens",
+    "aiMaxTokensPlaceholder": "Env-Standard",
+    "aiMaxTokensHint": "Output-Budget pro Analyse (1.000–128.000). Leer = AI_MAX_TOKENS aus der .env. Greift sofort ohne Neustart — z.B. hochdrehen, wenn Analysen am Token-Limit abbrechen."
   },
   "profile": {
     "title": "Dein Profil",
@@ -377,7 +381,7 @@
       "title": "Eigene KI-Schnittstelle",
       "intro": "Optional kannst du hier deine eigene KI-Schnittstelle hinterlegen, um Analysen mit deinem eigenen Account/Modell laufen zu lassen — z.B. wenn der App-Admin die zentrale KI deaktiviert hat oder du ein eigenes Modell bevorzugst.",
       "disclaimerTitle": "Hinweise zu Kosten und Verantwortung",
-      "disclaimerBody": "• Bei Cloud-Anbietern (Anthropic, OpenAI) entstehen pro Anfrage Kosten gemäß deren Preisliste — eine Analyse mit großem Prompt + Reasoning-Modell kann pro Lauf 0,05–1,50 € kosten.\n• Dein API-Schlüssel wird symmetrisch verschlüsselt gespeichert (AES-128 via Fernet, Schlüssel aus dem App-SECRET_KEY abgeleitet).\n• Die Analyse-Anfrage geht direkt an den von dir gewählten Anbieter — wir leiten weder Konto-Daten noch zusätzliche Identifikatoren mit.\n• Du bist datenschutzrechtlich selbst dafür verantwortlich, einen Anbieter zu wählen, der deinen Anforderungen genügt (Region, AVV, Datenverarbeitung).\n• Bei Self-Hosted-Endpunkten (Ollama, AnythingLLM, open-webui, vLLM, llama.cpp) entstehen keine Pro-Anfrage-Kosten, dafür trägst du die Hardware-Last.",
+      "disclaimerBody": "• Bei Cloud-Anbietern (Anthropic, OpenAI) entstehen pro Anfrage Kosten gemäß deren Preisliste. Zur Orientierung bei unseren Promptgrößen (~80.000–100.000 Input-Tokens): kleine Modelle ~0,05–0,20 €, Mittelklasse ~0,30–0,80 €, Opus-Klasse ~1,00–2,00 €, Top-Modelle wie Claude Fable 5 ~1,50–3,00 € pro Lauf — mit hohem Output-Limit oder viel Reasoning auch darüber.\n• Die tatsächlichen Kosten hängen von Modell, Reasoning-Einstellung und Output-Limit ab — prüfe die Preisliste deines Anbieters. Für entstandene API-Kosten übernehmen wir keine Haftung. Tipp: Mit dem Feld „Max. Output-Tokens\" kannst du die Kosten pro Lauf deckeln.\n• Dein API-Schlüssel wird symmetrisch verschlüsselt gespeichert (AES-128 via Fernet, Schlüssel aus dem App-SECRET_KEY abgeleitet).\n• Die Analyse-Anfrage geht direkt an den von dir gewählten Anbieter — wir leiten weder Konto-Daten noch zusätzliche Identifikatoren mit.\n• Du bist datenschutzrechtlich selbst dafür verantwortlich, einen Anbieter zu wählen, der deinen Anforderungen genügt (Region, AVV, Datenverarbeitung).\n• Bei Self-Hosted-Endpunkten (Ollama, AnythingLLM, open-webui, vLLM, llama.cpp) entstehen keine Pro-Anfrage-Kosten, dafür trägst du die Hardware-Last.",
       "currentlyConfigured": "Aktuell konfiguriert: {provider} · Modell: {model} · Schlüssel: {key}",
       "provider": "Anbieter",
       "providerAnthropic": "Anthropic (Claude)",
@@ -398,7 +402,7 @@
       "labelPlaceholder": "z.B. Mein Ollama @ Heim",
       "reasoningEffort": "Reasoning-Tiefe (nur GPT-5 / o-Serie)",
       "reasoningEffortOff": "Standard (kein Reasoning, schnellste Antwort)",
-      "reasoningEffortHint": "Erzwingt OpenAIs reasoning_effort-Parameter bei unterstützten Modellen. „high\" ≈ 5–10× mehr Output-Tokens, dafür spürbar tiefere Coaching-Findings. Anthropic und die meisten selbst-gehosteten Server ignorieren das Feld.",
+      "reasoningEffortHint": "Erzwingt OpenAIs reasoning_effort-Parameter bei unterstützten Modellen (GPT-5 / o-Serie). „high\" ≈ 5–10× mehr Output-Tokens, dafür spürbar tiefere Coaching-Findings.",
       "save": "Speichern",
       "test": "Testen",
       "delete": "Schnittstelle entfernen",
@@ -408,7 +412,18 @@
       "testFail": "Verbindung fehlgeschlagen",
       "errModelRequired": "Modellname ist erforderlich.",
       "errKeyRequired": "API-Schlüssel ist erforderlich.",
-      "errBaseUrlRequired": "Base-URL ist erforderlich (vollständige URL mit http(s):// und /v1)."
+      "errBaseUrlRequired": "Base-URL ist erforderlich (vollständige URL mit http(s):// und /v1).",
+      "reasoningEffortHintAnthropic": "Aktiviert Claudes adaptives Thinking mit der gewählten Effort-Stufe (Claude 4.6+/Fable; „minimal\" wird zu „low\"). Leer = kein explizites Reasoning — sicher für alle Claude-Modelle.",
+      "enableThinking": "Thinking-Modus",
+      "enableThinkingInherit": "Server-Standard übernehmen",
+      "enableThinkingOn": "An (Chain-of-Thought erzwingen)",
+      "enableThinkingOff": "Aus (schneller, weniger tief)",
+      "enableThinkingHint": "Setzt enable_thinking im Chat-Template deines Servers (llama.cpp/vLLM, z.B. Qwen/DeepSeek). Bei „An\" wird auch Qwen-kompatibles Sampling (temp ≥ 0.6) verwendet.",
+      "maxTokens": "Max. Output-Tokens (optional)",
+      "maxTokensPlaceholder": "App-Standard",
+      "maxTokensHint": "Obergrenze pro Analyse (1.000–128.000). Leer = App-Standard. Bei Cloud-Providern eine Kostenbremse; Thinking-Modelle brauchen typischerweise 20.000+.",
+      "contextHintTitle": "Wichtig: Kontextfenster deines Servers",
+      "contextHintBody": "Die Analyse-Prompts sind sehr groß (typisch 80.000–100.000 Tokens). Dein Server muss mit einem Kontextfenster von mindestens 128k Tokens laufen, sonst schlägt die Analyse mit einem „exceeds context size\"-Fehler fehl.\nOllama lädt Modelle standardmäßig mit nur 4k–16k Kontext! Abhilfe: ein abgeleitetes Modell mit größerem Kontext anlegen (Modelfile: PARAMETER num_ctx 131072) oder global die Umgebungsvariable OLLAMA_CONTEXT_LENGTH=131072 setzen und Ollama neu starten. Bei llama.cpp/vLLM den Server mit entsprechendem --ctx-size starten."
     }
   },
   "errors": {
@@ -421,7 +436,6 @@
   "legal": {
     "imprintLink": "Impressum",
     "privacyLink": "Datenschutz",
-
     "imprintTitle": "Impressum",
     "imprintProviderHeading": "Anbieter (Diensteanbieter im Sinne des § 5 DDG)",
     "imprintContactHeading": "Kontakt",
@@ -439,11 +453,9 @@
     "imprintDisclaimerBody": "Die Inhalte dieses Angebots wurden mit größtmöglicher Sorgfalt erstellt. Für die Richtigkeit, Vollständigkeit und Aktualität der Inhalte sowie der von der KI erzeugten Auswertungen kann jedoch keine Gewähr übernommen werden. Es handelt sich um ein nicht-kommerzielles Fan-Projekt; eine professionelle Beratung wird hierdurch nicht ersetzt. Die in den Berichten verarbeiteten Spieldaten stammen von warcraftlogs.com; für deren Inhalte ist ausschließlich der jeweilige Betreiber bzw. Uploader verantwortlich.",
     "imprintBlizzardHeading": "Hinweis zu Markenrechten",
     "imprintBlizzardBody": "World of Warcraft® sowie zugehörige Begriffe, Logos und Charakterdarstellungen sind eingetragene Marken der Blizzard Entertainment, Inc. Dieses Angebot wird unabhängig betrieben und steht in keiner Verbindung zu Blizzard Entertainment, Inc. oder einem ihrer Tochterunternehmen.",
-
     "privacyTitle": "Datenschutzerklärung",
     "privacyLastUpdated": "Stand: Mai 2026",
     "privacyIntro": "Diese Datenschutzerklärung informiert dich gemäß Art. 13 und 14 der Datenschutz-Grundverordnung (DSGVO) über die Verarbeitung personenbezogener Daten, die anfällt, wenn du diesen Dienst nutzt. Wir verarbeiten Daten ausschließlich zu den in dieser Erklärung beschriebenen Zwecken und auf Basis der genannten Rechtsgrundlagen.",
-
     "privacySections": {
       "controller": {
         "heading": "1. Verantwortlicher",

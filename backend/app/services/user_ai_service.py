@@ -60,6 +60,8 @@ async def upsert_config(
             api_key_encrypted=encrypted,
             label=payload.label.strip(),
             reasoning_effort=payload.reasoning_effort,
+            enable_thinking=payload.enable_thinking,
+            max_output_tokens=payload.max_output_tokens,
         )
         session.add(cfg)
     else:
@@ -69,6 +71,8 @@ async def upsert_config(
         cfg.api_key_encrypted = encrypted
         cfg.label = payload.label.strip()
         cfg.reasoning_effort = payload.reasoning_effort
+        cfg.enable_thinking = payload.enable_thinking
+        cfg.max_output_tokens = payload.max_output_tokens
     await session.flush()
     return cfg
 
@@ -88,6 +92,8 @@ def to_out(cfg: UserAiConfig) -> UserAiConfigOut:
         label=cfg.label,
         api_key_masked=_mask(plain),
         reasoning_effort=cfg.reasoning_effort,  # type: ignore[arg-type]
+        enable_thinking=cfg.enable_thinking,
+        max_output_tokens=cfg.max_output_tokens,
     )
 
 
@@ -99,7 +105,15 @@ def provider_for_user_config(cfg: UserAiConfig) -> AiProvider:
     """
     api_key = decrypt_str(cfg.api_key_encrypted)
     if cfg.provider_type == "anthropic":
-        return AnthropicProvider(api_key=api_key, model=cfg.model)
+        # reasoning_effort maps to Claude's adaptive thinking +
+        # ``output_config.effort`` inside the provider (opt-in — unset
+        # keeps the request shape valid for every Claude model id).
+        return AnthropicProvider(
+            api_key=api_key,
+            model=cfg.model,
+            reasoning_effort=cfg.reasoning_effort,
+            max_tokens=cfg.max_output_tokens,
+        )
     # Both "openai" cloud and "openai_compatible" self-hosted speak the same
     # /v1/chat/completions API — only base_url + key vary.
     base_url = cfg.base_url or "https://api.openai.com/v1"
@@ -109,6 +123,8 @@ def provider_for_user_config(cfg: UserAiConfig) -> AiProvider:
         base_url=base_url,
         model=cfg.model,
         reasoning_effort=cfg.reasoning_effort,
+        enable_thinking=cfg.enable_thinking,
+        max_tokens=cfg.max_output_tokens,
     )
 
 

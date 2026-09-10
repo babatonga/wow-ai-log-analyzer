@@ -54,6 +54,10 @@ function AdminView({ locale, currentUserId }: { locale: Locale; currentUserId: s
   // "" = no override, fall back to server-side OPENAI_REASONING_EFFORT env.
   // Mirrors the UserAiConfigPanel dropdown semantics.
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | "">("");
+  // Claude adaptive thinking + effort for the app-wide Anthropic provider.
+  const [anthropicEffort, setAnthropicEffort] = useState<ReasoningEffort | "">("");
+  // "" = env-level AI_MAX_TOKENS applies.
+  const [maxTokens, setMaxTokens] = useState<string>("");
 
   useEffect(() => {
     if (settingsQ.data) {
@@ -61,6 +65,10 @@ function AdminView({ locale, currentUserId }: { locale: Locale; currentUserId: s
       setProvider(settingsQ.data.ai_provider);
       setModel(settingsQ.data.ai_model);
       setReasoningEffort(settingsQ.data.openai_reasoning_effort ?? "");
+      setAnthropicEffort(settingsQ.data.anthropic_reasoning_effort ?? "");
+      setMaxTokens(
+        settingsQ.data.ai_max_tokens != null ? String(settingsQ.data.ai_max_tokens) : "",
+      );
     }
   }, [settingsQ.data]);
 
@@ -77,6 +85,9 @@ function AdminView({ locale, currentUserId }: { locale: Locale; currentUserId: s
           // is simpler than gating on provider===openai and avoids leaving
           // a stale override behind when admin flips back to anthropic.
           openai_reasoning_effort: reasoningEffort,
+          anthropic_reasoning_effort: anthropicEffort,
+          // 0 clears the override server-side (env default applies again).
+          ai_max_tokens: maxTokens.trim() ? Number(maxTokens.trim()) : 0,
         },
       }),
     onSuccess: () => {
@@ -177,9 +188,11 @@ function AdminView({ locale, currentUserId }: { locale: Locale; currentUserId: s
               <Select value={model} onChange={(e) => setModel(e.target.value)}>
                 {provider === "anthropic" && (
                   <>
-                    <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-                    <option value="claude-opus-4-7">claude-opus-4-7</option>
-                    <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+                    <option value="claude-opus-4-8">claude-opus-4-8 (recommended)</option>
+                    <option value="claude-fable-5">claude-fable-5 (most capable)</option>
+                    <option value="claude-sonnet-4-6">claude-sonnet-4-6 (balanced)</option>
+                    <option value="claude-opus-4-7">claude-opus-4-7 (previous gen)</option>
+                    <option value="claude-haiku-4-5">claude-haiku-4-5 (cheapest)</option>
                   </>
                 )}
                 {provider === "openai" && (
@@ -196,14 +209,16 @@ function AdminView({ locale, currentUserId }: { locale: Locale; currentUserId: s
               </Select>
             )}
           </div>
-          {provider === "openai" && (
-            <div className="md:col-span-3">
+          {(provider === "openai" || provider === "anthropic") && (
+            <div className="md:col-span-2">
               <Label>{t("admin.aiReasoningEffort")}</Label>
               <Select
-                value={reasoningEffort}
-                onChange={(e) =>
-                  setReasoningEffort(e.target.value as ReasoningEffort | "")
-                }
+                value={provider === "openai" ? reasoningEffort : anthropicEffort}
+                onChange={(e) => {
+                  const v = e.target.value as ReasoningEffort | "";
+                  if (provider === "openai") setReasoningEffort(v);
+                  else setAnthropicEffort(v);
+                }}
               >
                 <option value="">{t("admin.aiReasoningEffortOff")}</option>
                 <option value="minimal">minimal</option>
@@ -212,10 +227,25 @@ function AdminView({ locale, currentUserId }: { locale: Locale; currentUserId: s
                 <option value="high">high</option>
               </Select>
               <p className="mt-1 text-xs text-zinc-500">
-                {t("admin.aiReasoningEffortHint")}
+                {provider === "anthropic"
+                  ? t("admin.aiReasoningEffortHintAnthropic")
+                  : t("admin.aiReasoningEffortHint")}
               </p>
             </div>
           )}
+          <div>
+            <Label>{t("admin.aiMaxTokens")}</Label>
+            <Input
+              type="number"
+              min={1000}
+              max={128000}
+              step={1000}
+              value={maxTokens}
+              onChange={(e) => setMaxTokens(e.target.value)}
+              placeholder={t("admin.aiMaxTokensPlaceholder")}
+            />
+            <p className="mt-1 text-xs text-zinc-500">{t("admin.aiMaxTokensHint")}</p>
+          </div>
         </div>
         <div className="mt-4 flex items-center gap-3">
           <Button onClick={() => saveSettings.mutate()} disabled={saveSettings.isPending}>

@@ -53,3 +53,11 @@ class UserAiConfig(Base, TimestampMixin):
     # ``provider_type=anthropic`` since Claude has its own ``thinking``
     # control that we don't surface here yet.
     reasoning_effort: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # ``openai_compatible`` only: overrides the app-wide
+    # LOCAL_AI_ENABLE_THINKING for the user's own self-hosted server
+    # (llama.cpp/vLLM ``chat_template_kwargs.enable_thinking``). NULL =
+    # inherit the app-wide setting.
+    enable_thinking: Mapped[bool | None] = mapped_column(nullable=True)
+    # Per-user output-token budget (cost cap for cloud BYOK). NULL =
+    # app-wide AI_MAX_TOKENS.
+    max_output_tokens: Mapped[int | None] = mapped_column(nullable=True)

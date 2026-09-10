@@ -36,6 +36,11 @@ export function UserAiConfigPanel() {
   // "" = use OpenAI default (no reasoning); rest map to GPT-5/o-series
   // ``reasoning_effort`` values. Only sent for openai* providers.
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | "">("");
+  // "" = inherit the app-wide default; "on"/"off" force the thinking
+  // toggle for the user's own OpenAI-compatible server.
+  const [enableThinking, setEnableThinking] = useState<"" | "on" | "off">("");
+  // "" = app-wide AI_MAX_TOKENS default.
+  const [maxOutputTokens, setMaxOutputTokens] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [testResult, setTestResult] = useState<UserAiConfigTestResult | null>(null);
@@ -55,6 +60,12 @@ export function UserAiConfigPanel() {
     setModel(cfgQ.data.model);
     setLabel(cfgQ.data.label);
     setReasoningEffort(cfgQ.data.reasoning_effort ?? "");
+    setEnableThinking(
+      cfgQ.data.enable_thinking == null ? "" : cfgQ.data.enable_thinking ? "on" : "off",
+    );
+    setMaxOutputTokens(
+      cfgQ.data.max_output_tokens != null ? String(cfgQ.data.max_output_tokens) : "",
+    );
     setHydrated(true);
   }, [cfgQ.data, hydrated]);
 
@@ -103,6 +114,8 @@ export function UserAiConfigPanel() {
       setApiKey("");
       setLabel("");
       setReasoningEffort("");
+      setEnableThinking("");
+      setMaxOutputTokens("");
       setTestResult(null);
       setErr(null);
       qc.invalidateQueries({ queryKey: ["my-ai-config"] });
@@ -142,10 +155,18 @@ export function UserAiConfigPanel() {
       // require re-entering — simplest approach.
       api_key: apiKey.trim(),
       label: label.trim() || undefined,
-      // Only meaningful for openai*; backend ignores it for anthropic.
-      // Empty string → null, telling backend to fall back to OpenAI's
-      // default (effectively no reasoning for Chat Completions).
+      // openai: GPT-5/o-series ``reasoning_effort``. anthropic: maps to
+      // Claude's adaptive thinking + effort in the backend. Empty → null
+      // = provider default (no explicit reasoning).
       reasoning_effort: reasoningEffort || null,
+      // openai_compatible only: overrides the app-wide thinking toggle
+      // for the user's own server. null = inherit.
+      enable_thinking:
+        enableThinking === "" ? null : enableThinking === "on",
+      // null = app-wide AI_MAX_TOKENS default.
+      max_output_tokens: maxOutputTokens.trim()
+        ? Number(maxOutputTokens.trim())
+        : null,
     };
   };
 
@@ -260,15 +281,13 @@ export function UserAiConfigPanel() {
           />
         </div>
 
-        {providerType === "openai" && (
-          // Only OpenAI cloud has a documented ``reasoning_effort`` API
-          // parameter (GPT-5 / o-series). Anthropic does not expose one,
-          // and self-hosted ``openai_compatible`` endpoints (Ollama,
-          // vLLM, LM Studio, …) don't either — even when the underlying
-          // model has its own reasoning capability, our request shape
-          // here would not engage it. Hiding the dropdown for those
-          // providers avoids the UX trap of "I picked high and nothing
-          // changed".
+        {providerType !== "openai_compatible" && (
+          // OpenAI cloud: maps to the ``reasoning_effort`` parameter
+          // (GPT-5 / o-series). Anthropic: maps to Claude's adaptive
+          // thinking + ``output_config.effort`` (minimal→low) on Claude
+          // 4.6+/Fable models. Self-hosted ``openai_compatible`` uses
+          // the thinking toggle below instead — their servers have no
+          // effort parameter.
           <div>
             <Label>{t("profile.aiCfg.reasoningEffort")}</Label>
             <Select
@@ -284,10 +303,62 @@ export function UserAiConfigPanel() {
               <option value="high">high</option>
             </Select>
             <p className="mt-1 text-xs text-zinc-500">
-              {t("profile.aiCfg.reasoningEffortHint")}
+              {providerType === "anthropic"
+                ? t("profile.aiCfg.reasoningEffortHintAnthropic")
+                : t("profile.aiCfg.reasoningEffortHint")}
             </p>
           </div>
         )}
+
+        {providerType === "openai_compatible" && (
+          // Self-hosted servers control their own context window — the app
+          // cannot raise it per request (verified: Ollama's OpenAI endpoint
+          // ignores options.num_ctx). Without ≥128k ctx every analysis
+          // fails, so surface this loudly before the user hits the error.
+          <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-sky-200">
+            <p className="font-semibold">{t("profile.aiCfg.contextHintTitle")}</p>
+            <p className="mt-1 whitespace-pre-line text-sky-100/90">
+              {t("profile.aiCfg.contextHintBody")}
+            </p>
+          </div>
+        )}
+
+        {providerType === "openai_compatible" && (
+          // Per-user override of the server-wide thinking toggle
+          // (llama.cpp/vLLM ``chat_template_kwargs.enable_thinking``).
+          <div>
+            <Label>{t("profile.aiCfg.enableThinking")}</Label>
+            <Select
+              value={enableThinking}
+              onChange={(e) =>
+                setEnableThinking(e.target.value as "" | "on" | "off")
+              }
+            >
+              <option value="">{t("profile.aiCfg.enableThinkingInherit")}</option>
+              <option value="on">{t("profile.aiCfg.enableThinkingOn")}</option>
+              <option value="off">{t("profile.aiCfg.enableThinkingOff")}</option>
+            </Select>
+            <p className="mt-1 text-xs text-zinc-500">
+              {t("profile.aiCfg.enableThinkingHint")}
+            </p>
+          </div>
+        )}
+
+        <div>
+          <Label>{t("profile.aiCfg.maxTokens")}</Label>
+          <Input
+            type="number"
+            min={1000}
+            max={128000}
+            step={1000}
+            value={maxOutputTokens}
+            onChange={(e) => setMaxOutputTokens(e.target.value)}
+            placeholder={t("profile.aiCfg.maxTokensPlaceholder")}
+          />
+          <p className="mt-1 text-xs text-zinc-500">
+            {t("profile.aiCfg.maxTokensHint")}
+          </p>
+        </div>
 
         <FieldError>{err}</FieldError>
 

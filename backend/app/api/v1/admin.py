@@ -47,6 +47,15 @@ def _settings_value(rows: list[AppSetting], key: str, default: object) -> object
 _VALID_REASONING_EFFORT = {"", "minimal", "low", "medium", "high"}
 
 
+def _normalize_max_tokens(raw: object) -> int | None:
+    """Coerce a stored/submitted ai_max_tokens into the valid range or None."""
+    try:
+        value = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return value if 1000 <= value <= 128000 else None
+
+
 def _normalize_reasoning_effort(raw: object) -> str | None:
     """Coerce a stored / submitted reasoning_effort into the canonical form.
 
@@ -72,6 +81,10 @@ async def read_settings(session: SessionDep, _: AdminUser) -> AdminSettingsOut:
         openai_reasoning_effort=_normalize_reasoning_effort(
             _settings_value(rows, "openai_reasoning_effort", settings.openai_reasoning_effort)
         ),
+        anthropic_reasoning_effort=_normalize_reasoning_effort(
+            _settings_value(rows, "anthropic_reasoning_effort", None)
+        ),
+        ai_max_tokens=_normalize_max_tokens(_settings_value(rows, "ai_max_tokens", None)),
     )
 
 
@@ -92,6 +105,19 @@ async def update_settings(
         await _upsert_setting(session, "ai_provider", {"value": payload.ai_provider})
     if payload.ai_model is not None:
         await _upsert_setting(session, "ai_model", {"value": payload.ai_model})
+    if payload.anthropic_reasoning_effort is not None:
+        await _upsert_setting(
+            session,
+            "anthropic_reasoning_effort",
+            {"value": _normalize_reasoning_effort(payload.anthropic_reasoning_effort) or ""},
+        )
+    if payload.ai_max_tokens is not None:
+        # 0 (or any out-of-range value) clears the override → env default.
+        await _upsert_setting(
+            session,
+            "ai_max_tokens",
+            {"value": _normalize_max_tokens(payload.ai_max_tokens) or ""},
+        )
     if payload.openai_reasoning_effort is not None:
         # Empty string explicitly clears the override → falls back to OpenAI's
         # default (no reasoning). Anything else is validated against the

@@ -54,6 +54,8 @@ function AcceptInvitePageInner({ params }: { params: Promise<{ locale: Locale }>
           token,
           password,
           display_name: displayName,
+          // Same as register: current UI locale → preferred language.
+          locale,
           captcha_token: captchaToken,
         },
       });

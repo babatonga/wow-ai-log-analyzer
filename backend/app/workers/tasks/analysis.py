@@ -84,7 +84,7 @@ async def run_analysis_task(_ctx: dict, analysis_id: str) -> None:
             _mark_failed(
                 aid,
                 "Worker timeout — the analysis didn't finish within the per-job "
-                "limit (30 min). For BYOK on slow self-hosted models, try a "
+                "limit (45 min). For BYOK on slow self-hosted models, try a "
                 "smaller model, lower context, or run on a GPU.",
             )
         )
