@@ -67,9 +67,21 @@ async def _resolve_provider_choice(session: AsyncSession) -> str:
     return settings.ai_provider
 
 
-def _provider_for(choice: str, *, openai_reasoning_effort: str | None = None) -> AiProvider:
+def _provider_for(
+    choice: str,
+    *,
+    openai_reasoning_effort: str | None = None,
+    anthropic_reasoning_effort: str | None = None,
+    max_tokens: int | None = None,
+    local_enable_thinking: bool | None = None,
+) -> AiProvider:
     if choice == "anthropic":
-        return AnthropicProvider()
+        # ``reasoning_effort`` opt-in maps to adaptive thinking +
+        # ``output_config.effort`` inside the provider; ``max_tokens``
+        # is the admin's runtime override of AI_MAX_TOKENS.
+        return AnthropicProvider(
+            reasoning_effort=anthropic_reasoning_effort, max_tokens=max_tokens
+        )
     if choice == "openai":
         # The admin Settings panel can override the env-level
         # ``OPENAI_REASONING_EFFORT`` via the ``openai_reasoning_effort``
@@ -77,10 +89,20 @@ def _provider_for(choice: str, *, openai_reasoning_effort: str | None = None) ->
         # silently inherit the env default when an admin has explicitly set
         # the override to "" (= off).
         return OpenAiCompatibleProvider(
-            mode="openai", reasoning_effort=openai_reasoning_effort
+            mode="openai",
+            reasoning_effort=openai_reasoning_effort,
+            max_tokens=max_tokens,
         )
     if choice == "local":
-        return OpenAiCompatibleProvider(mode="local")
+        # ``local_enable_thinking`` carries the admin's Local-AI-card
+        # toggle (supervisor config) into the per-request
+        # ``chat_template_kwargs`` — without it the env value silently
+        # overrides whatever the admin clicked in the UI.
+        return OpenAiCompatibleProvider(
+            mode="local",
+            enable_thinking=local_enable_thinking,
+            max_tokens=max_tokens,
+        )
     raise UpstreamError(f"Unsupported AI provider: {choice}")
 
 
@@ -108,6 +130,64 @@ async def _resolve_openai_reasoning_effort(session: AsyncSession) -> str | None:
     if value in {"minimal", "low", "medium", "high"}:
         return value
     return None
+
+
+async def _resolve_anthropic_reasoning_effort(session: AsyncSession) -> str | None:
+    """Admin override for Claude adaptive thinking + effort.
+
+    Same semantics as the OpenAI variant: unset/empty → None → the
+    provider sends no ``thinking``/``output_config`` at all (safe for
+    every Claude model id).
+    """
+    row = (
+        await session.execute(
+            select(AppSetting).where(AppSetting.key == "anthropic_reasoning_effort")
+        )
+    ).scalar_one_or_none()
+    if not row or not row.value:
+        return None
+    value = str((row.value or {}).get("value") or "").strip().lower()
+    if value in {"minimal", "low", "medium", "high"}:
+        return value
+    return None
+
+
+async def _resolve_ai_max_tokens(session: AsyncSession) -> int | None:
+    """Admin runtime override for the per-analysis output-token budget.
+
+    None → the providers fall back to the env-level AI_MAX_TOKENS.
+    Lets admins react to truncated/looping analyses without a redeploy.
+    """
+    row = (
+        await session.execute(
+            select(AppSetting).where(AppSetting.key == "ai_max_tokens")
+        )
+    ).scalar_one_or_none()
+    if not row or not row.value:
+        return None
+    try:
+        value = int((row.value or {}).get("value") or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if 1000 <= value <= 128000 else None
+
+
+async def _resolve_local_enable_thinking() -> bool | None:
+    """Best-effort read of the Local-AI card's thinking toggle.
+
+    The supervisor persists ``config.enable_thinking`` (admin-editable in
+    the UI); the provider must mirror it per request because llama.cpp's
+    request-level ``chat_template_kwargs`` override the server-level
+    template default. Unreachable supervisor → None → env fallback.
+    """
+    try:
+        from app.services import local_ai_supervisor_service as supervisor
+
+        status = await supervisor.get_status()
+        value = ((status or {}).get("config") or {}).get("enable_thinking")
+        return bool(value) if value is not None else None
+    except Exception:  # noqa: BLE001 — availability is genuinely optional here
+        return None
 
 
 async def _resolve_model(session: AsyncSession, choice: str) -> str:
@@ -1186,15 +1266,28 @@ async def request_analysis(
                 "own AI provider in your profile and try again."
             )
         chosen_model = await _resolve_model(session, chosen_provider)
-        # Only OpenAI listens to ``reasoning_effort`` — fetch it cheaply and
-        # let ``_provider_for`` decide whether to plumb it through.
-        admin_effort = (
+        admin_openai_effort = (
             await _resolve_openai_reasoning_effort(session)
             if chosen_provider == "openai"
             else None
         )
+        admin_anthropic_effort = (
+            await _resolve_anthropic_reasoning_effort(session)
+            if chosen_provider == "anthropic"
+            else None
+        )
+        admin_max_tokens = await _resolve_ai_max_tokens(session)
+        local_thinking = (
+            await _resolve_local_enable_thinking()
+            if chosen_provider == "local"
+            else None
+        )
         used_provider = provider or _provider_for(
-            chosen_provider, openai_reasoning_effort=admin_effort
+            chosen_provider,
+            openai_reasoning_effort=admin_openai_effort,
+            anthropic_reasoning_effort=admin_anthropic_effort,
+            max_tokens=admin_max_tokens,
+            local_enable_thinking=local_thinking,
         )
 
     if existing_row is not None:

@@ -55,6 +55,13 @@ class AdminSettingsOut(BaseModel):
     # it for anthropic / local. Mirrors the per-user BYOK ``reasoning_effort``
     # so admins running the app-wide OpenAI key get the same lever.
     openai_reasoning_effort: str | None = None
+    # Claude adaptive thinking + ``output_config.effort`` for the app-wide
+    # Anthropic provider (Claude 4.6+/Fable). Unset/empty = no explicit
+    # reasoning — the safe request shape for every Claude model id.
+    anthropic_reasoning_effort: str | None = None
+    # Runtime override of the env-level AI_MAX_TOKENS output budget.
+    # None = env default. Lets admins react to truncated analyses live.
+    ai_max_tokens: int | None = None
 
 
 class AdminSettingsUpdate(BaseModel):
@@ -65,6 +72,10 @@ class AdminSettingsUpdate(BaseModel):
     # ``"" | "minimal" | "low" | "medium" | "high"``. Empty string and None
     # both clear the override and fall back to OpenAI's default.
     openai_reasoning_effort: str | None = None
+    # Same range; empty clears. Applied to the app-wide Anthropic provider.
+    anthropic_reasoning_effort: str | None = None
+    # 1000..128000, or 0/None to clear the override (env default applies).
+    ai_max_tokens: int | None = None
 
 
 class AdminUserUpdate(BaseModel):
