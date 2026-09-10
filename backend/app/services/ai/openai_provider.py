@@ -28,13 +28,13 @@ Mode = Literal["openai", "local"]
 # when the env var is set to an empty string — see the constructor below.
 _DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
-# 30 min HTTP read timeout. Cloud OpenAI typically replies in 1-3 min, but
+# 45 min HTTP read timeout. Cloud OpenAI typically replies in 1-3 min, but
 # BYOK users on a self-hosted Ollama / llama.cpp endpoint with consumer
 # hardware (no GPU or partial offload) can take 15-25 min to generate.
 # Connect/write/pool stay tight so we still fail fast on a dead endpoint.
 # Matches the arq ``run_analysis_task`` job_timeout so neither layer cuts
 # the other off mid-generation.
-_AI_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=30 * 60, write=60.0, pool=15.0)
+_AI_HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=45 * 60, write=60.0, pool=15.0)
 
 
 class OpenAiCompatibleProvider:
@@ -46,6 +46,8 @@ class OpenAiCompatibleProvider:
         base_url: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        enable_thinking: bool | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         """Build a provider.
 
@@ -58,9 +60,18 @@ class OpenAiCompatibleProvider:
         for the per-user BYOK path (the user's profile lets them pick their
         own GPT-5 reasoning level). None / empty string falls through to
         the app-wide setting.
+
+        ``enable_thinking`` (local mode only) overrides the app-wide
+        ``LOCAL_AI_ENABLE_THINKING`` for BYOK users pointing at their own
+        OpenAI-compatible server — their Qwen/DeepSeek may want thinking
+        on or off independently of the bundled llama.cpp's setting.
+        ``max_tokens`` overrides the app-wide ``AI_MAX_TOKENS`` default
+        (per-user output budget / cost cap).
         """
         self._mode = mode
         self._reasoning_effort_override = (reasoning_effort or "").strip().lower() or None
+        self._enable_thinking_override = enable_thinking
+        self._max_tokens_override = max_tokens
         if api_key is not None:
             # BYOK / user-config path. Trust whatever the caller hands us
             # for self-hosted (``local`` mode), but for cloud OpenAI we
@@ -115,7 +126,7 @@ class OpenAiCompatibleProvider:
         temperature: float = 0.2,
     ) -> AiResponse:
         chosen = model or self._default_model
-        max_t = max_tokens or settings.ai_max_tokens
+        max_t = max_tokens or self._max_tokens_override or settings.ai_max_tokens
 
         # Qwen 3.5/3.6 (and other recent reasoning-capable models) split
         # output into ``content`` (final answer) and ``reasoning_content``
@@ -131,10 +142,22 @@ class OpenAiCompatibleProvider:
         # 'chat_template_kwargs'"), so only send it for local mode.
         extra_body: dict[str, Any] = {}
         if self._mode == "local":
+            thinking_on = (
+                self._enable_thinking_override
+                if self._enable_thinking_override is not None
+                else settings.local_ai_enable_thinking
+            )
+            # Two dialects for the same toggle: llama.cpp/vLLM read
+            # ``chat_template_kwargs.enable_thinking``; Ollama has its own
+            # top-level ``think`` field and silently ignores
+            # chat_template_kwargs (verified live — Qwen kept reasoning
+            # despite enable_thinking=false). Each server ignores the
+            # other's field, so sending both covers all backends.
             extra_body["chat_template_kwargs"] = {
-                "enable_thinking": settings.local_ai_enable_thinking,
+                "enable_thinking": thinking_on,
             }
-            if settings.local_ai_enable_thinking:
+            extra_body["think"] = thinking_on
+            if thinking_on:
                 # Qwen reasoning models degenerate into endless repetition
                 # loops at near-greedy sampling — observed live: a German
                 # analysis burned the full 48k output budget inside the
@@ -172,18 +195,19 @@ class OpenAiCompatibleProvider:
             else {"max_tokens": max_t}
         )
 
-        # GPT-5 / o-series with reasoning engaged REJECT every
-        # non-default ``temperature`` value (``Only the default (1) value
-        # is supported``). For local llama.cpp and for OpenAI in
-        # non-reasoning mode (gpt-4o-family or gpt-5* without
-        # reasoning_effort), the parameter is honoured normally.
-        # → omit ``temperature`` whenever we just told OpenAI to reason.
-        omit_temperature = (
-            self._mode == "openai" and "reasoning_effort" in extra_body
-        )
+        # Current OpenAI models (gpt-5.x reasoning family) REJECT every
+        # non-default ``temperature`` value with a 400 — verified live
+        # against gpt-5.6-terra, which rejects it even WITHOUT
+        # reasoning_effort set. Legacy gpt-4o would accept it, but the
+        # structured-output prompt doesn't need low-temperature
+        # determinism, so we omit the parameter for cloud OpenAI
+        # entirely (same decision as the Anthropic provider). Local
+        # llama.cpp keeps honouring it (needed for the Qwen thinking
+        # sampling floor).
+        omit_temperature = self._mode == "openai"
 
-        try:
-            resp = await self._client.chat.completions.create(
+        async def _create(body: dict[str, Any] | None):
+            return await self._client.chat.completions.create(
                 model=chosen,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -191,8 +215,28 @@ class OpenAiCompatibleProvider:
                 ],
                 **token_kwargs,
                 **({} if omit_temperature else {"temperature": temperature}),
-                extra_body=extra_body or None,
+                extra_body=body,
             )
+
+        try:
+            try:
+                resp = await _create(extra_body or None)
+            except Exception as exc:  # noqa: BLE001
+                # Ollama rejects the ``think`` field outright for models
+                # without thinking capability ("model does not support
+                # thinking"). Drop the toggle and retry once so a plain
+                # model still works with any thinking-mode setting.
+                msg = str(exc).lower()
+                if "think" in extra_body and "does not support thinking" in msg:
+                    logger.info(
+                        "%s: model %s rejects the think toggle — retrying without it",
+                        self._mode,
+                        chosen,
+                    )
+                    retry_body = {k: v for k, v in extra_body.items() if k != "think"}
+                    resp = await _create(retry_body or None)
+                else:
+                    raise
         except Exception as exc:  # noqa: BLE001
             raise UpstreamError(f"{self._mode} chat completion failed: {exc}") from exc
 
@@ -250,8 +294,10 @@ class OpenAiCompatibleProvider:
             raise UpstreamError(
                 f"{self._mode} response hit the {max_t}-token output limit before "
                 "producing the structured JSON (the reasoning trace consumed the "
-                "whole budget). Raise AI_MAX_TOKENS or disable "
-                "LOCAL_AI_ENABLE_THINKING."
+                "whole budget). Raise the max output tokens (admins: "
+                "AI_MAX_TOKENS / admin settings; own AI config: the "
+                "'max output tokens' field in your profile) or disable "
+                "the thinking mode."
             )
 
         return AiResponse(
