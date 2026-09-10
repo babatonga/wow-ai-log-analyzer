@@ -41,6 +41,8 @@ export interface UserAiConfig {
   label: string;
   api_key_masked: string;
   reasoning_effort: ReasoningEffort | null;
+  enable_thinking: boolean | null;
+  max_output_tokens: number | null;
 }
 
 export interface UserAiConfigInput {
@@ -50,6 +52,8 @@ export interface UserAiConfigInput {
   api_key: string;
   label?: string;
   reasoning_effort?: ReasoningEffort | null;
+  enable_thinking?: boolean | null;
+  max_output_tokens?: number | null;
 }
 
 export interface UserAiConfigTestResult {
@@ -394,6 +398,8 @@ export interface AdminSettings {
   // the server-side ``OPENAI_REASONING_EFFORT`` env. Mirrors the per-user
   // BYOK ``reasoning_effort`` on ``UserAiConfig``.
   openai_reasoning_effort: ReasoningEffort | null;
+  anthropic_reasoning_effort: ReasoningEffort | null;
+  ai_max_tokens: number | null;
 }
 
 export interface WclConnectionStatus {

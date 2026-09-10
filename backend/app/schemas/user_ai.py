@@ -24,6 +24,8 @@ class UserAiConfigOut(BaseModel):
     # which key is on file without us ever exposing the secret.
     api_key_masked: str
     reasoning_effort: ReasoningEffort | None = None
+    enable_thinking: bool | None = None
+    max_output_tokens: int | None = None
 
 
 class UserAiConfigIn(BaseModel):
@@ -32,10 +34,17 @@ class UserAiConfigIn(BaseModel):
     model: str = Field(min_length=1, max_length=128)
     api_key: str = Field(min_length=1, max_length=512)
     label: str = Field(default="", max_length=64)
-    # Optional. Only honoured when provider_type is openai/openai_compatible
-    # and the model recognises it (GPT-5 / o-series). Anthropic & most
-    # self-hosted servers ignore the field.
+    # Optional. For openai/openai_compatible this is OpenAI's
+    # ``reasoning_effort`` (GPT-5 / o-series). For anthropic it maps to
+    # Claude's adaptive thinking + ``output_config.effort``
+    # (minimal→low). Unset = provider default (no explicit reasoning).
     reasoning_effort: ReasoningEffort | None = None
+    # ``openai_compatible`` only: per-user thinking toggle for the user's own
+    # OpenAI-compatible server. None = inherit the app-wide default.
+    enable_thinking: bool | None = None
+    # Per-user output-token budget. None = app-wide AI_MAX_TOKENS default.
+    max_output_tokens: int | None = Field(default=None, ge=1000, le=128000)
+
 
 
 class UserAiConfigTestIn(BaseModel):

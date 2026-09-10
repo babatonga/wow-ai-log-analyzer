@@ -355,7 +355,11 @@
     "topLogsRefreshDps": "Refresh DPS only (incremental)",
     "topLogsRefreshHps": "Refresh HPS only (incremental)",
     "topLogsMetric": "Metric",
-    "topLogsMetricAll": "All"
+    "topLogsMetricAll": "All",
+    "aiReasoningEffortHintAnthropic": "Enables Claude's adaptive thinking at the chosen effort level (Claude 4.6+/Fable; \"minimal\" maps to \"low\"). Empty = no explicit reasoning.",
+    "aiMaxTokens": "Max output tokens",
+    "aiMaxTokensPlaceholder": "Env default",
+    "aiMaxTokensHint": "Per-analysis output budget (1,000–128,000). Empty = AI_MAX_TOKENS from .env. Takes effect immediately without a restart — e.g. raise it when analyses truncate at the token limit."
   },
   "profile": {
     "title": "Your profile",
@@ -377,7 +381,7 @@
       "title": "Bring-your-own AI provider",
       "intro": "Optionally store your own AI credentials here so analyses can run on your own account/model — useful when the app-wide AI is disabled by the admin or you prefer a specific provider.",
       "disclaimerTitle": "Cost & responsibility notice",
-      "disclaimerBody": "• Cloud providers (Anthropic, OpenAI) charge per request according to their pricing — a large-prompt + reasoning-model analysis can cost €0.05–€1.50 per run.\n• Your API key is stored encrypted (AES-128 via Fernet, key derived from the app SECRET_KEY).\n• Analysis requests go directly to the provider you choose — we do not forward account data or extra identifiers.\n• Under data-protection law you are responsible for picking a provider that meets your requirements (region, DPA, processing).\n• Self-hosted endpoints (Ollama, AnythingLLM, open-webui, vLLM, llama.cpp) incur no per-request cost; you carry the hardware load.",
+      "disclaimerBody": "• Cloud providers (Anthropic, OpenAI) charge per request according to their pricing. As a rough guide at our prompt sizes (~80,000–100,000 input tokens): small models ~€0.05–0.20, mid-tier ~€0.30–0.80, Opus-class ~€1.00–2.00, top models like Claude Fable 5 ~€1.50–3.00 per run — potentially more with a high output limit or heavy reasoning.\n• Actual costs depend on the model, reasoning setting and output limit — check your provider's price list. We accept no liability for API costs incurred. Tip: use the \"max output tokens\" field to cap the cost per run.\n• Your API key is stored encrypted (AES-128 via Fernet, key derived from the app SECRET_KEY).\n• Analysis requests go directly to the provider you choose — we do not forward account data or extra identifiers.\n• Under data-protection law you are responsible for picking a provider that meets your requirements (region, DPA, processing).\n• Self-hosted endpoints (Ollama, AnythingLLM, open-webui, vLLM, llama.cpp) incur no per-request cost; you carry the hardware load.",
       "currentlyConfigured": "Currently configured: {provider} · model: {model} · key: {key}",
       "provider": "Provider",
       "providerAnthropic": "Anthropic (Claude)",
@@ -398,7 +402,7 @@
       "labelPlaceholder": "e.g. My home Ollama",
       "reasoningEffort": "Reasoning effort (GPT-5 / o-series only)",
       "reasoningEffortOff": "Default (no reasoning, fastest)",
-      "reasoningEffortHint": "Forces OpenAI's reasoning_effort parameter on supported models. ``high`` ≈ 5–10× more output tokens but visibly deeper coaching findings. Anthropic and most self-hosted servers ignore this.",
+      "reasoningEffortHint": "Forces OpenAI's reasoning_effort parameter on supported models (GPT-5 / o-series). \"high\" ≈ 5–10× more output tokens but visibly deeper coaching findings.",
       "save": "Save",
       "test": "Test",
       "delete": "Remove configuration",
@@ -408,7 +412,18 @@
       "testFail": "Connection failed",
       "errModelRequired": "Model name is required.",
       "errKeyRequired": "API key is required.",
-      "errBaseUrlRequired": "Base URL is required (full URL with http(s):// and /v1)."
+      "errBaseUrlRequired": "Base URL is required (full URL with http(s):// and /v1).",
+      "reasoningEffortHintAnthropic": "Enables Claude's adaptive thinking at the chosen effort level (Claude 4.6+/Fable; \"minimal\" maps to \"low\"). Empty = no explicit reasoning — safe for every Claude model.",
+      "enableThinking": "Thinking mode",
+      "enableThinkingInherit": "Inherit server default",
+      "enableThinkingOn": "On (force chain-of-thought)",
+      "enableThinkingOff": "Off (faster, shallower)",
+      "enableThinkingHint": "Sets enable_thinking in your server's chat template (llama.cpp/vLLM, e.g. Qwen/DeepSeek). \"On\" also applies Qwen-friendly sampling (temp ≥ 0.6).",
+      "maxTokens": "Max output tokens (optional)",
+      "maxTokensPlaceholder": "App default",
+      "maxTokensHint": "Per-analysis output cap (1,000–128,000). Empty = app default. A cost brake for cloud providers; thinking models typically need 20,000+.",
+      "contextHintTitle": "Important: your server's context window",
+      "contextHintBody": "Analysis prompts are very large (typically 80,000–100,000 tokens). Your server must run with a context window of at least 128k tokens, otherwise analyses fail with an \"exceeds context size\" error.\nOllama loads models with only 4k–16k context by default! Fix: create a derived model with a larger context (Modelfile: PARAMETER num_ctx 131072) or set the environment variable OLLAMA_CONTEXT_LENGTH=131072 globally and restart Ollama. For llama.cpp/vLLM, start the server with a matching --ctx-size."
     }
   },
   "errors": {
@@ -421,7 +436,6 @@
   "legal": {
     "imprintLink": "Imprint",
     "privacyLink": "Privacy",
-
     "imprintTitle": "Imprint",
     "imprintProviderHeading": "Service provider (in the sense of § 5 DDG)",
     "imprintContactHeading": "Contact",
@@ -439,11 +453,9 @@
     "imprintDisclaimerBody": "The contents of this service have been prepared with the greatest possible care. We do not, however, give any warranty as to the accuracy, completeness or up-to-dateness of the information or of the AI-generated reports. This is a non-commercial fan project; nothing on this site replaces professional advice. The game data processed in the reports is sourced from warcraftlogs.com; the respective operator and uploader is solely responsible for that content.",
     "imprintBlizzardHeading": "Trademark notice",
     "imprintBlizzardBody": "World of Warcraft® and all related terms, logos and character likenesses are registered trademarks of Blizzard Entertainment, Inc. This service is operated independently and is not affiliated with, endorsed by or sponsored by Blizzard Entertainment, Inc. or any of its subsidiaries.",
-
     "privacyTitle": "Privacy Policy",
     "privacyLastUpdated": "Last updated: May 2026",
     "privacyIntro": "This privacy policy explains, in line with Articles 13 and 14 of the EU General Data Protection Regulation (GDPR), how we process personal data when you use this service. We process data only for the purposes described below and only on the legal bases stated.",
-
     "privacySections": {
       "controller": {
         "heading": "1. Controller",
