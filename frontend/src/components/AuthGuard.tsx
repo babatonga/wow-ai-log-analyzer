@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "@/lib/api";
-import { clearAuth, setCachedUser } from "@/lib/auth";
+import { clearAuth, getAccessToken, setCachedUser } from "@/lib/auth";
 import type { Locale } from "@/i18n/config";
 import type { UserOut } from "@/types/api";
 
@@ -20,6 +20,13 @@ export function AuthGuard({ locale, requireAdmin, children }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // No token → straight to login without firing a request that would
+    // predictably 401 (and get logged to the browser console).
+    if (!getAccessToken()) {
+      clearAuth();
+      router.replace(`/${locale}/login`);
+      return;
+    }
     apiFetch<UserOut>("/api/v1/users/me")
       .then((u) => {
         if (requireAdmin && u.role !== "admin") {

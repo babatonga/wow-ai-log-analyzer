@@ -172,7 +172,6 @@ function AnalyzeView({ locale }: { locale: Locale }) {
 
   useEffect(() => {
     if (activeReportId) scrollToReportSection();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeReportId]);
 
   // Disable the import button as long as either the HTTP request is in
