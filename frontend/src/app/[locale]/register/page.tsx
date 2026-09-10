@@ -66,6 +66,10 @@ function RegisterPageInner({ params }: { params: Promise<{ locale: Locale }> }) 
           password,
           display_name: displayName,
           invite_token: inviteToken || undefined,
+          // Active UI locale becomes the account's preferred language —
+          // a user registering on /de shouldn't have to flip their
+          // profile to German afterwards.
+          locale,
           captcha_token: captchaToken,
         },
       });

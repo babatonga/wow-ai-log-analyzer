@@ -9,6 +9,10 @@ class RegisterIn(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=80)
     invite_token: str | None = None
+    # UI locale active at registration time — becomes the account's
+    # "preferred language" so a user who registered on /de doesn't have
+    # to flip their profile to German manually. Invalid/missing → "en".
+    locale: str | None = None
     # Cloudflare Turnstile token from the front-end widget. Required when
     # ``settings.turnstile_enabled`` is True; ignored otherwise.
     captcha_token: str | None = None
@@ -44,4 +48,6 @@ class AcceptInviteIn(BaseModel):
     token: str
     password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=80)
+    # Same semantics as RegisterIn.locale.
+    locale: str | None = None
     captcha_token: str | None = None

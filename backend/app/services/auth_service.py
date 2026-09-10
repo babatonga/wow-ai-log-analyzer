@@ -45,6 +45,7 @@ async def register_user(
     password: str,
     display_name: str,
     invite_token: str | None,
+    locale: str | None = None,
 ) -> User:
     """Register a new user. Either open registration must be enabled OR a valid invite is required."""
     invite: Invite | None = None
@@ -65,6 +66,7 @@ async def register_user(
         password_hash=hash_password(password),
         role=UserRole.user,
         is_active=True,
+        locale=locale if locale in {"en", "de"} else "en",
     )
     session.add(user)
 
@@ -214,6 +216,7 @@ async def accept_invite(
     token: str,
     password: str,
     display_name: str,
+    locale: str | None = None,
 ) -> User:
     invite = await _consume_invite(session, token, expected_email=None)
     existing = (
@@ -227,6 +230,7 @@ async def accept_invite(
         password_hash=hash_password(password),
         role=UserRole.user,
         is_active=True,
+        locale=locale if locale in {"en", "de"} else "en",
     )
     session.add(user)
     invite.accepted_at = datetime.now(UTC)

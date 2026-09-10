@@ -50,6 +50,7 @@ async def register(
         password=payload.password,
         display_name=payload.display_name,
         invite_token=payload.invite_token,
+        locale=payload.locale,
     )
     await session.commit()
     return TokenPair(**auth_service.issue_token_pair(user))
@@ -125,6 +126,7 @@ async def accept_invite(
         token=payload.token,
         password=payload.password,
         display_name=payload.display_name,
+        locale=payload.locale,
     )
     await session.commit()
     return UserOut.model_validate(user)
